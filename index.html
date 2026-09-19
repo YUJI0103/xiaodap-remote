@@ -1,0 +1,1339 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XIAO DAP Remote</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E %3Crect x='2' y='2' width='60' height='60' rx='14' fill='%232f6fde'/%3E %3Cpath d='M24 9v7M32 9v7M40 9v7M24 48v7M32 48v7M40 48v7M9 24h7M9 32h7M9 40h7M48 24h7M48 32h7M48 40h7' stroke='%23fff' stroke-width='3' stroke-linecap='round'/%3E %3Crect x='16' y='16' width='32' height='32' rx='5' fill='%232f6fde' stroke='%23fff' stroke-width='3.5'/%3E %3Cpath d='M21 32c2.5-8 5-8 7.5 0s5 8 7.5 0 4.5-8 7 0' fill='none' stroke='%23fff' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'/%3E %3C/svg%3E">
+<!--
+  XIAO DAP を USB 経由で操作する Web アプリ（仕様書 付録 D）。
+  Chrome / Edge の Web Serial API を使う。HTTPS か localhost のページでのみ動く。
+  開発中:  cd webapp && python -m http.server 8000  →  http://localhost:8000/
+  ※ ボーレート 1200 で開くと XIAO が書き込みモードに入るので、必ず 115200 で開く。
+-->
+<style>
+:root {
+  --bg: #f4f5f7; --panel: #ffffff; --text: #1d2330; --muted: #6b7385; --line: #dde1e8;
+  --accent: #2f6fde; --accent-text: #ffffff; --ok: #1f9d55; --warn: #c77700; --err: #d23c3c;
+  --chip: #eef1f6; --log-bg: #0f1420; --log-text: #c9d3e6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151c; --panel: #1b2029; --text: #e6e9ef; --muted: #98a1b3; --line: #2c3340;
+    --accent: #5b8ff0; --accent-text: #0d1117; --ok: #3ccf7f; --warn: #f0a93b; --err: #f06a6a;
+    --chip: #252b36; --log-bg: #0b0e14; --log-text: #b9c4d8;
+  }
+}
+* { box-sizing: border-box; }
+/* hidden 属性を必ず効かせる（display を指定した要素では、そのままだと hidden が負けて表示されてしまう） */
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif; }
+header { position: sticky; top: 0; z-index: 2; background: var(--panel); border-bottom: 1px solid var(--line); }
+.bar { max-width: 880px; margin: 0 auto; padding: 10px 16px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.bar h1 { font-size: 17px; margin: 0 8px 0 0; letter-spacing: .02em; display: flex; align-items: center; gap: 8px; }
+.bar h1 .logo { width: 26px; height: 26px; flex: none; }
+.chip { font-size: 12px; padding: 2px 9px; border-radius: 99px; background: var(--chip); color: var(--muted); white-space: nowrap; }
+.chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.err { color: var(--err); }
+.spacer { flex: 1; }
+button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  border-radius: 8px; padding: 6px 14px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+nav { max-width: 880px; margin: 0 auto; padding: 0 16px; display: flex; gap: 2px; overflow-x: auto; }
+nav button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 14px; color: var(--muted); }
+nav button.active { color: var(--text); border-bottom-color: var(--accent); }
+main { max-width: 880px; margin: 0 auto; padding: 16px; }
+section.tab { display: none; } section.tab.active { display: block; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+.card h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); font-weight: 600; letter-spacing: .04em; }
+.row { display: flex; align-items: center; gap: 12px; padding: 7px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.row:first-of-type { border-top: none; }
+.row label { flex: 1; min-width: 140px; }
+select { font: inherit; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: none; border-radius: 0; padding: 5px 12px; border-left: 1px solid var(--line); }
+.seg button:first-child { border-left: none; }
+.seg button.on { background: var(--accent); color: var(--accent-text); }
+.vol { display: flex; align-items: center; gap: 10px; }
+.vol input[type=range] { flex: 1; accent-color: var(--accent); }
+.vol .db { font-variant-numeric: tabular-nums; min-width: 72px; text-align: right; font-size: 22px; font-weight: 600; }
+.note { color: var(--muted); font-size: 13px; }
+table.info { border-collapse: collapse; width: 100%; }
+table.info td { padding: 6px 4px; border-top: 1px solid var(--line); vertical-align: top; }
+table.info tr:first-child td { border-top: none; }
+table.info td:first-child { color: var(--muted); width: 38%; }
+#log { background: var(--log-bg); color: var(--log-text); border-radius: 10px; padding: 10px 12px; height: 60vh; overflow: auto;
+  font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; word-break: break-all; margin: 0; }
+.logbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.empty { text-align: center; padding: 40px 16px; color: var(--muted); }
+.banner { background: var(--chip); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+.banner.err { color: var(--err); }
+
+/* 再生 */
+.now { display: flex; gap: 16px; align-items: center; }
+.art { width: 132px; height: 132px; flex: none; border-radius: 10px; background: var(--chip); color: var(--muted);
+  display: grid; place-items: center; font-size: 44px; overflow: hidden; }
+.art img { width: 100%; height: 100%; object-fit: cover; }
+.meta { min-width: 0; flex: 1; }
+.meta .title { font-size: 20px; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere; }
+.meta .sub { color: var(--muted); overflow-wrap: anywhere; }
+.meta a { color: inherit; text-decoration: none; border-bottom: 1px dotted var(--muted); cursor: pointer; }
+.meta a:hover { color: var(--accent); }
+.fmt { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+.seek { display: flex; align-items: center; gap: 10px; margin-top: 16px; font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
+.seek input { flex: 1; accent-color: var(--accent); }
+.controls { display: flex; justify-content: center; gap: 10px; margin-top: 12px; }
+.controls button { width: 48px; height: 48px; padding: 0; border-radius: 50%; display: grid; place-items: center; }
+.controls button.main { width: 60px; height: 60px; background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.controls svg { width: 22px; height: 22px; fill: currentColor; }
+.controls button.main svg { width: 28px; height: 28px; }
+
+/* ライブラリ */
+.crumbs { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; font-size: 14px; }
+.crumbs a { color: var(--accent); cursor: pointer; }
+.crumbs span.sep { color: var(--muted); }
+.list { list-style: none; margin: 0; padding: 0; }
+.list li { display: flex; align-items: center; gap: 10px; padding: 10px 6px; border-top: 1px solid var(--line); cursor: pointer; }
+.list li:first-child { border-top: none; }
+.list li:hover { background: var(--chip); }
+.list li.current { color: var(--accent); font-weight: 600; }
+.list .no { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 2.2em; text-align: right; font-size: 13px; }
+.list .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.list .cnt { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.list li.more { justify-content: center; color: var(--muted); cursor: default; }
+.list .cnt.ng { color: var(--warn); }
+#nowList li.current .no { color: var(--accent); }
+#nowListSummary { margin: -6px 0 6px; }
+.libbar { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 6px; }
+.libbar .crumbs { margin-bottom: 0; }
+#libShuffle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 5px 12px; }
+#libShuffle svg { width: 16px; height: 16px; fill: currentColor; }
+#libSummary { margin: 2px 0 8px; }
+.shufrow { margin-top: 14px; border-top: 1px solid var(--line); }
+.libtools { display: flex; gap: 8px; align-items: center; }
+/* パネル表示 */
+.grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 16px 14px; }
+.grid li { cursor: pointer; min-width: 0; }
+.grid .thumb { aspect-ratio: 1; border-radius: 10px; background: var(--chip); color: var(--muted); display: grid; place-items: center;
+  font-size: 34px; overflow: hidden; }
+.grid .thumb img, .albumhead .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.grid .name { display: block; margin-top: 6px; font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; }
+.grid .cnt { display: block; color: var(--muted); font-size: 12px; }
+.grid li:hover .thumb { outline: 2px solid var(--accent); }
+.grid li.current .name { color: var(--accent); font-weight: 600; }
+.grid li.more { grid-column: 1 / -1; text-align: center; color: var(--muted); cursor: default; }
+.artisthead { font-size: 22px; font-weight: 650; line-height: 1.3; margin: 8px 0 2px; overflow-wrap: anywhere; }
+.albumhead { display: flex; gap: 16px; align-items: flex-end; margin: 6px 0 14px; }
+.albumhead .art { width: 160px; height: 160px; }
+.albumhead .t { font-size: 20px; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere; }
+.albumhead .a { color: var(--muted); overflow-wrap: anywhere; }
+.albumhead .n { color: var(--muted); font-size: 13px; margin-top: 4px; }
+@media (max-width: 520px) { .albumhead .art { width: 110px; height: 110px; } .albumhead .t { font-size: 17px; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); } }
+@media (max-width: 520px) { .art { width: 96px; height: 96px; font-size: 32px; } .meta .title { font-size: 17px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1><svg class="logo" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"> <rect x="2" y="2" width="60" height="60" rx="14" fill="#2f6fde"/> <path d="M24 9v7M32 9v7M40 9v7M24 48v7M32 48v7M40 48v7M9 24h7M9 32h7M9 40h7M48 24h7M48 32h7M48 40h7" stroke="#fff" stroke-width="3" stroke-linecap="round"/> <rect x="16" y="16" width="32" height="32" rx="5" fill="#2f6fde" stroke="#fff" stroke-width="3.5"/> <path d="M21 32c2.5-8 5-8 7.5 0s5 8 7.5 0 4.5-8 7 0" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/> </svg>XIAO DAP Remote</h1>
+    <span id="connChip" class="chip">未接続</span>
+    <span id="modeChip" class="chip" hidden></span>
+    <span id="hwChip" class="chip" hidden title="認識している DAC / PLL（機器情報タブに詳細）"></span>
+    <span id="dispChip" class="chip" hidden></span>
+    <span class="spacer"></span>
+    <button id="modeBtn" disabled title="SD モード ⇔ USB-DAC モード（本体が再起動します）">モード切替</button>
+    <button id="connectBtn" class="primary">接続</button>
+  </div>
+  <nav id="tabs">
+    <button data-tab="play" class="active">再生</button>
+    <button data-tab="library">ライブラリ</button>
+    <button data-tab="settings">設定</button>
+    <button data-tab="info">機器情報</button>
+    <button data-tab="log">ログ</button>
+  </nav>
+</header>
+
+<main>
+  <div id="noSerial" class="banner err" hidden>このブラウザは Web Serial に対応していません。PC の Chrome か Edge で開いてください。</div>
+  <div id="switchBanner" class="banner" hidden></div>
+  <div id="notConnected" class="banner">XIAO DAP を USB でつなぎ、「接続」を押してください。一度許可すると、次からは自動でつながります。</div>
+
+  <section id="tab-play" class="tab active">
+    <div class="card">
+      <h2>音量</h2>
+      <div class="vol">
+        <button id="volDown" aria-label="音量を下げる">−</button>
+        <input id="volSlider" type="range" min="-60" max="0" step="1" value="-32">
+        <button id="volUp" aria-label="音量を上げる">＋</button>
+        <span id="volText" class="db">--</span>
+      </div>
+      <div class="row">
+        <label>MAX VOL MODE（0dB 固定）</label>
+        <span id="maxvolNote" class="note"></span>
+        <div class="seg" id="maxvolSeg"><button data-v="0">OFF</button><button data-v="1">ON</button></div>
+      </div>
+    </div>
+    <div class="card" id="playerCard">
+      <div class="now">
+        <div class="art" id="art" aria-hidden="true">♪</div>
+        <div class="meta">
+          <div class="title" id="npTitle">—</div>
+          <div class="sub"><a id="npArtist" title="ライブラリでこのアーティストのアルバム一覧を開く"></a></div>
+          <div class="sub"><a id="npAlbum" title="ライブラリでこのアルバムを開く"></a></div>
+          <div class="fmt" id="npFmt"></div>
+        </div>
+      </div>
+      <div class="seek">
+        <span id="posText">0:00</span>
+        <input id="seekBar" type="range" min="0" max="0" step="1" value="0" aria-label="再生位置">
+        <span id="totText">0:00</span>
+      </div>
+      <div class="controls">
+        <button data-cmd="prevalbum" title="前のアルバム"><svg viewBox="0 0 24 24"><path d="M4 5h2v14H4zM20 5v14l-7-7zM13 5v14l-7-7z"/></svg></button>
+        <button data-cmd="prev" title="前の曲"><svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM19 5v14L9 12z"/></svg></button>
+        <button data-cmd="toggle" class="main" title="再生 / 一時停止" id="toggleBtn"><svg viewBox="0 0 24 24" id="toggleIcon"><path d="M8 5v14l11-7z"/></svg></button>
+        <button data-cmd="next" title="次の曲"><svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM5 5v14l10-7z"/></svg></button>
+        <button data-cmd="nextalbum" title="次のアルバム"><svg viewBox="0 0 24 24"><path d="M18 5h2v14h-2zM4 5v14l7-7zM11 5v14l7-7z"/></svg></button>
+      </div>
+      <div class="row shufrow">
+        <label>シャッフル再生</label>
+        <div class="seg" id="shuffleSeg">
+          <button data-v="off">OFF</button><button data-v="all">全曲</button><button data-v="artist">アーティスト</button><button data-v="album">アルバム</button>
+        </div>
+      </div>
+      <p class="note">アーティスト・アルバムは再生中の曲が基準です。本体の「次の曲」「前の曲」もシャッフルの順になります（電源を切るまで続きます）。</p>
+    </div>
+    <div class="card" id="nowListCard" hidden>
+      <h2 id="nowListTitle">このアルバムの曲</h2>
+      <div class="note" id="nowListSummary"></div>
+      <ul class="list" id="nowList"></ul>
+    </div>
+    <div class="card" id="usbCard" hidden>
+      <h2>USB-DAC</h2>
+      <div id="usbState" class="title">—</div>
+      <p class="note">USB-DAC モードでは PC・スマホの音声を再生します。曲の操作は PC 側で行ってください。</p>
+    </div>
+  </section>
+
+  <section id="tab-library" class="tab">
+    <div class="card">
+      <div class="libbar">
+        <div class="crumbs" id="crumbs"></div>
+        <div class="libtools">
+        <div class="seg" id="libMode" title="表示の切替"><button data-v="list">リスト</button><button data-v="panel">パネル</button></div>
+        <button id="libShuffle" title="この一覧の範囲でシャッフル再生">
+          <svg viewBox="0 0 24 24"><path d="M17 3l4 4-4 4V8h-2.6l-8 8H3v-2h2.6l8-8H17zM3 8h3.4l2.3 2.3-1.4 1.4L5.6 10H3zm11.3 5.7l1.4-1.4 2.3 2.3V14l4 4-4 4v-3h-3.4z"/></svg>
+          <span>シャッフル再生</span>
+        </button>
+        </div>
+      </div>
+      <div class="artisthead" id="artistHead" hidden></div>
+      <div class="albumhead" id="albumHead" hidden>
+        <div class="art" id="headArt">♪</div>
+        <div class="meta"><div class="t" id="headTitle"></div><div class="a" id="headArtist"></div><div class="n" id="headNote"></div></div>
+      </div>
+      <div id="libSummary" class="note"></div>
+      <ul class="list" id="libList"></ul>
+      <div id="libMsg" class="empty" hidden></div>
+    </div>
+  </section>
+
+  <section id="tab-settings" class="tab">
+    <div class="card">
+      <h2>画面</h2>
+      <div class="row"><label>180° 回転（SW1/SW2 も入れ替わる）</label>
+        <div class="seg" data-set="rotate"><button data-v="0">OFF</button><button data-v="1">ON</button></div></div>
+      <div class="row"><label>再生画面のスタイル</label>
+        <div class="seg" data-set="style"><button data-v="0">Standard</button><button data-v="1">Detail</button></div></div>
+      <div class="row"><label>明るさ</label>
+        <div class="seg" data-set="bright"><button data-v="0">1</button><button data-v="1">2</button><button data-v="2">3</button><button data-v="3">4</button><button data-v="4">5</button></div></div>
+      <div class="row"><label>自動消灯</label>
+        <div class="seg" data-set="autooff"><button data-v="0">OFF</button><button data-v="1">15s</button><button data-v="2">30s</button><button data-v="3">1m</button></div></div>
+      <p class="note">本体の画面が消灯中に変更しても、画面は点きません（本体のボタンで復帰します）。</p>
+    </div>
+    <div class="card">
+      <h2>再生</h2>
+      <div class="row"><label>ギャップレス再生</label>
+        <span id="gaplessNote" class="note"></span>
+        <div class="seg" data-set="gapless"><button data-v="0">OFF</button><button data-v="1">ON</button></div></div>
+    </div>
+    <div class="card">
+      <h2>音質調整 <span id="soundDac"></span></h2>
+      <div id="soundRows"></div>
+      <div class="row"><label id="soundPending" class="note"></label><button id="soundReset">既定値に戻す</button></div>
+    </div>
+  </section>
+
+  <section id="tab-info" class="tab">
+    <div class="card">
+      <h2>機器情報</h2>
+      <table class="info" id="infoTable"></table>
+      <div class="row"><span class="spacer"></span><button id="artClear" title="ブラウザに保存したアルバムアートを消す（次に表示するときに本体から取り直す）">保存したアルバムアートを消去</button><button id="infoReload">再読み込み</button></div>
+    </div>
+  </section>
+
+  <section id="tab-log" class="tab">
+    <div class="logbar">
+      <label><input type="checkbox" id="logFollow" checked> 自動スクロール</label>
+      <label><input type="checkbox" id="logProto"> 通信の行も表示</label>
+      <span class="spacer"></span>
+      <button id="logCopy">コピー</button>
+      <button id="logClear">消去</button>
+    </div>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<script>
+'use strict';
+
+// ---------------------------------------------------------------
+// 接続（Web Serial）
+// ---------------------------------------------------------------
+const FILTERS = [
+  { usbVendorId: 0x2886, usbProductId: 0x802F },   // SD モード（Seeed XIAO の既定）
+  { usbVendorId: 0x1209, usbProductId: 0x0001 },   // USB-DAC モード（仮の番号）
+];
+const BAUD = 115200;   // 1200 は書き込みモードに入るので使わない
+
+const $ = (id) => document.getElementById(id);
+const state = { port: null, reader: null, writer: null, connected: false, hello: null,
+  settings: null, soundItems: [], vol: null, status: null };
+
+let nextId = 1;
+const waiting = new Map();   // id → { resolve, reject, items, timer }
+
+function setConnChip(text, cls) {
+  const c = $('connChip');
+  c.textContent = text;
+  c.className = 'chip' + (cls ? ' ' + cls : '');
+}
+
+let lastOpenError = '';
+let sessionStarting = false;
+
+// manual = 「接続」ボタンから（自動接続の失敗は同じエラーを繰り返し出さない）
+async function openPort(port, manual) {
+  // 自動接続（定期確認・connect イベント）が同時に開こうとしないように（open() は重ねて呼べない）
+  if (state.port || state.opening) return;
+  state.opening = true;
+  try {
+    await port.open({ baudRate: BAUD });
+  } catch (e) {
+    if (manual || e.message !== lastOpenError) logLine(`[web] ポートを開けません（ほかのアプリが使用中？）: ${e.message}`);
+    lastOpenError = e.message;
+    return;
+  } finally {
+    state.opening = false;
+  }
+  lastOpenError = '';
+  try { await port.setSignals({ dataTerminalReady: true }); } catch (_) {}
+  state.port = port;
+  state.writer = port.writable.getWriter();
+  state.connected = true;
+  state.keepReading = true;
+  setConnChip('接続中…', 'warn');
+  readLoop(port);
+  sessionStarting = true;
+  try {
+    await startSession();
+  } catch (e) {
+    logLine(`[web] 初期化に失敗: ${e.message}`);
+  } finally {
+    sessionStarting = false;
+  }
+}
+
+// 受信ループ。終わったら（切断・closePort）後始末をしてポートを閉じる
+async function readLoop(port) {
+  const decoder = new TextDecoder();
+  let buf = '';
+  try {
+    while (port.readable && state.keepReading) {
+      state.reader = port.readable.getReader();
+      try {
+        for (;;) {
+          const { value, done } = await state.reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let i;
+          while ((i = buf.indexOf('\n')) >= 0) {
+            const line = buf.slice(0, i).replace(/\r$/, '');
+            buf = buf.slice(i + 1);
+            onLine(line);
+          }
+        }
+      } finally {
+        state.reader.releaseLock();
+        state.reader = null;
+      }
+    }
+  } catch (e) {
+    if (state.keepReading) logLine(`[web] 受信が止まりました: ${e.message}`);
+  }
+  await cleanup(port);
+}
+
+// 切断を依頼する（実際の後始末は受信ループの終わりで行う）
+async function closePort() {
+  state.keepReading = false;
+  if (state.reader) { try { await state.reader.cancel(); } catch (_) {} }
+}
+
+async function cleanup(port) {
+  if (state.port !== port) return;
+  state.port = null;
+  state.connected = false;
+  state.hello = null;
+  try { state.writer && state.writer.releaseLock(); } catch (_) {}
+  state.writer = null;
+  try { await port.close(); } catch (_) {}
+  for (const [, w] of waiting) { clearTimeout(w.timer); w.reject(new Error('切断されました')); }
+  waiting.clear();
+  setConnChip('未接続');
+  $('modeChip').hidden = true;
+  $('hwChip').hidden = true;
+  $('dispChip').hidden = true;
+  $('notConnected').hidden = !!modeSwitch;   // 切替中は切替の案内だけ出す
+  $('connectBtn').hidden = !!modeSwitch;
+  $('modeBtn').disabled = true;
+  logLine('[web] 切断しました');
+}
+
+// コマンドを送り、応答（ok の行）を待つ。一覧の応答は items に集める
+function send(cmd, timeoutMs = 4000) {
+  if (!state.writer) return Promise.reject(new Error('未接続'));
+  const id = nextId;
+  nextId = nextId >= 65535 ? 1 : nextId + 1;
+  const line = `${id} ${cmd}\n`;
+  if ($('logProto').checked) logLine('> ' + line.trim(), 'proto');
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      waiting.delete(id);
+      reject(new Error(`応答がありません: ${cmd}`));
+    }, timeoutMs);
+    waiting.set(id, { resolve, reject, items: [], timer });
+    state.writer.write(new TextEncoder().encode(line)).catch(reject);
+  });
+}
+
+function onLine(line) {
+  if (!line.startsWith('@')) { logLine(line); return; }
+  if ($('logProto').checked) logLine(line, 'proto');
+  let m;
+  try { m = JSON.parse(line.slice(1)); } catch (e) { logLine('[web] 読めない行: ' + line); return; }
+  if (m.ev) { onEvent(m); return; }
+  const w = waiting.get(m.id);
+  if (!w) return;
+  if (m.item) { w.items.push(m.item); return; }
+  if (m.b64 !== undefined) { w.items.push(m.b64); return; }   // artget の画像データ
+  clearTimeout(w.timer);
+  waiting.delete(m.id);
+  if (m.ok) { m.items = w.items; w.resolve(m); }
+  else w.reject(Object.assign(new Error(`エラー: ${m.err}`), { code: m.err }));
+}
+
+// ---------------------------------------------------------------
+// セッション（接続直後・本体の再起動後）
+// ---------------------------------------------------------------
+async function startSession() {
+  // 起動直後の本体は DAC の準備（約 4 秒）が終わるまで応答しないので、何度か待つ
+  let h = null;
+  for (let i = 0; i < 5 && !h; i++) {
+    try { h = await send('hello', 3000); }
+    catch (e) { if (!state.connected || i === 4) throw e; }
+  }
+  if (h.dev !== 'XIAO DAP') {
+    logLine('[web] XIAO DAP ではない機器です。切断します');
+    await closePort();
+    return;
+  }
+  applyHello(h);
+  await refreshAll();
+}
+
+function applyHello(h) {
+  state.hello = h;
+  setConnChip(`接続: v${h.fw}`, 'ok');
+  const mc = $('modeChip');
+  mc.hidden = false;
+  mc.textContent = h.mode === 'usbdac' ? 'USB-DAC モード' : 'SD モード';
+  $('notConnected').hidden = true;
+  $('connectBtn').hidden = true;
+  $('gaplessNote').textContent = h.mode === 'usbdac' ? 'SD モードのみ' : '';
+  const usb = h.mode === 'usbdac';
+  $('playerCard').hidden = usb;
+  $('usbCard').hidden = !usb;
+  renderNowList();
+  const mb = $('modeBtn');
+  mb.disabled = false;
+  mb.textContent = usb ? 'SD モードへ' : 'USB-DAC モードへ';
+  if (modeSwitch && modeSwitch.to === h.mode) {   // 切替後につながった
+    logLine(`[web] ${usb ? 'USB-DAC' : 'SD'} モードに切り替わりました（${((Date.now() - modeSwitch.at) / 1000).toFixed(1)} 秒）`);
+    endModeSwitch();
+  }
+}
+
+// ---------------------------------------------------------------
+// モードの切替（本体が再起動する。付録 D.7）
+// ---------------------------------------------------------------
+let modeSwitch = null;   // { to, at, timer }
+
+function endModeSwitch() {
+  if (modeSwitch) clearTimeout(modeSwitch.timer);
+  modeSwitch = null;
+  $('switchBanner').hidden = true;
+}
+
+$('modeBtn').addEventListener('click', async () => {
+  if (!state.hello) return;
+  const to = state.hello.mode === 'usbdac' ? 'sd' : 'usbdac';
+  const name = to === 'usbdac' ? 'USB-DAC モード' : 'SD モード';
+  const note = state.hello.mode === 'sd' ? '再生中なら一時停止します。' : 'PC の音声出力はいったん止まります。';
+  if (!confirm(`${name}に切り替えます。本体が再起動し、5 秒ほどかかります。${note}`)) return;
+  $('modeBtn').disabled = true;
+  try {
+    const r = await send('mode ' + to, 8000);
+    if (!r.reboot) { $('modeBtn').disabled = false; return; }
+    const b = $('switchBanner');
+    b.hidden = false;
+    b.textContent = `${name}に切り替えています…（本体を再起動中。自動でつなぎ直します）`;
+    modeSwitch = { to, at: Date.now() };
+    // つながらないとき: 初めてのモードはブラウザの許可が要る（モードごとに USB の番号が違う）
+    modeSwitch.timer = setTimeout(() => {
+      if (!modeSwitch) return;
+      b.textContent = `${name}につながりません。初めて切り替えたときは「接続」を押して、`
+        + `${to === 'usbdac' ? '「XIAO DAP USB-DAC」' : 'XIAO（SD モード）'}のポートを選んでください（モードごとに一度だけ許可が要ります）。`;
+      $('connectBtn').hidden = false;
+    }, 15000);
+  } catch (e) {
+    logLine('[web] mode: ' + e.message);
+    $('modeBtn').disabled = false;
+  }
+});
+
+async function refreshAll() {
+  const [st, se, inf] = [await send('status'), await send('settings'), await send('info')];
+  applyStatus(st);
+  applySettings(se, se.items);
+  renderInfo(inf);
+  if (state.hello.mode === 'sd') {
+    // 索引の状態を先に（再生タブのアート・曲一覧は索引が使えるときだけ取り寄せる。
+    // 逆の順だとページを開き直した直後にアートが出なかった）
+    applyLib({ gen: st.gen, ready: st.lib });
+    if (st.lib) applyNow(await send('now'));
+    else applyNow({ track: -1 });
+  } else {
+    applyUsb(st);
+    showLibMessage('USB-DAC モードでは SD カードの曲を扱いません。');
+  }
+}
+
+function onEvent(m) {
+  switch (m.ev) {
+    case 'hello':
+      if (sessionStarting) break;   // 接続直後は startSession() が取り直す
+      applyHello(m);
+      refreshAll().catch((e) => logLine('[web] ' + e.message));
+      break;
+    case 'vol': applyVol(m); break;
+    case 'settings':
+      // 項目の数が変わった（DAC が違う）なら一覧から取り直す
+      if (!state.settings || m.sound.length !== state.soundItems.length)
+        send('settings').then((s) => applySettings(s, s.items)).catch(() => {});
+      else applySettings(m);
+      break;
+    case 'disp': applyDisp(m.disp); break;
+    case 'track': applyNow(m); break;
+    case 'state': applyState(m.state); break;
+    case 'pos': setElapsed(m.elapsed); break;
+    case 'lib': applyLib(m); break;
+    case 'usb': applyUsb(m); break;
+    case 'shuffle': applyShuffle(m); break;
+  }
+}
+
+// ---------------------------------------------------------------
+// 状態の表示
+// ---------------------------------------------------------------
+function applyStatus(s) {
+  state.status = s;
+  applyVol(s);
+  applyDisp(s.disp);
+  if (s.mode === 'sd') {
+    applyState(s.state);
+    applyShuffle(s);
+    if (s.track >= 0 && s.elapsed != null) setElapsed(s.elapsed);
+  } else {
+    applyUsb(s);
+  }
+}
+
+function applyDisp(disp) {
+  const c = $('dispChip');
+  c.hidden = disp !== 'off';
+  c.textContent = '本体の画面: 消灯中';
+}
+
+let volDragging = false;
+function applyVol(v) {
+  state.vol = v;
+  $('volText').textContent = v.maxvol ? 'MAX' : `${v.vol} dB`;
+  if (!volDragging) $('volSlider').value = v.vol;
+  const locked = v.maxvol || v.maxvol_pending;
+  for (const id of ['volSlider', 'volUp', 'volDown']) $(id).disabled = locked;
+  setSeg($('maxvolSeg'), v.maxvol || v.maxvol_pending ? 1 : 0);
+  $('maxvolNote').textContent = v.maxvol_pending ? '無音になるのを待っています…' : '';
+}
+
+function setSeg(seg, v) {
+  for (const b of seg.querySelectorAll('button')) b.classList.toggle('on', Number(b.dataset.v) === Number(v));
+}
+
+function applySettings(s, items) {
+  state.settings = s;
+  for (const seg of document.querySelectorAll('.seg[data-set]')) setSeg(seg, s[seg.dataset.set]);
+  const gap = document.querySelector('.seg[data-set="gapless"]');
+  for (const b of gap.querySelectorAll('button')) b.disabled = state.hello && state.hello.mode === 'usbdac';
+  if (items) {
+    state.soundItems = items;
+    const rows = $('soundRows');
+    rows.textContent = '';
+    if (!items.length) rows.innerHTML = '<p class="note">この DAC は音質調整に対応していません。</p>';
+    for (const it of items) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const lab = document.createElement('label');
+      lab.textContent = it.label;
+      const sel = document.createElement('select');
+      it.values.forEach((name, i) => sel.add(new Option(name, i)));
+      sel.dataset.i = it.i;
+      sel.addEventListener('change', () => doSet(`sound ${it.i} ${sel.value}`));
+      row.append(lab, sel);
+      rows.append(row);
+    }
+    $('soundReset').disabled = !items.length;
+  }
+  document.querySelectorAll('#soundRows select').forEach((sel) => { sel.value = s.sound[sel.dataset.i]; });
+  $('soundPending').textContent = s.sound_pending ? 'DAC へ反映中…（再生中は一時停止してから反映します）' : '';
+}
+
+function hex(n) { return '0x' + n.toString(16).toUpperCase().padStart(2, '0'); }
+
+function renderInfo(i) {
+  // ヘッダーに認識している DAC / PLL
+  const hw = $('hwChip');
+  hw.hidden = false;
+  hw.textContent = `DAC: ${i.dac}  /  PLL: ${i.pll}`;
+  hw.className = 'chip' + (i.dac === 'none' || i.pll === 'none' ? ' warn' : '');
+  const rows = [
+    ['FW', `v${i.fw}（${i.build}）`],
+    ['モード', i.mode === 'usbdac' ? 'USB-DAC' : 'SD'],
+    ['DAC', i.dac + (i.dac_addr ? '  ' + i.dac_addr.map(hex).join(' / ') : '')],
+    ['PLL', i.pll + (i.pll_addr != null ? '  ' + hex(i.pll_addr) : '')],
+    ['OLED', `${i.oled}  ${hex(i.oled_addr)}`],
+    ['サンプルレート', `${i.rate} Hz`],
+  ];
+  if (i.sd_fs) rows.push(['SD カード', `${i.sd_fs}${i.sd_mb ? '  ' + i.sd_mb.toLocaleString() + ' MB' : ''}`]);
+  else rows.push(['SD カード', 'なし']);
+  if (i.artists != null) rows.push(['ライブラリ', `アーティスト ${i.artists} / アルバム ${i.albums} / 曲 ${i.tracks}`]);
+  if (i.font != null) rows.push(['フォント', i.font ? 'FONT16.BIN' : 'なし']);
+  rows.push(['I2C', i.i2c.map(hex).join(' ')]);
+  const t = $('infoTable');
+  t.textContent = '';
+  for (const [k, v] of rows) {
+    const tr = t.insertRow();
+    tr.insertCell().textContent = k;
+    tr.insertCell().textContent = v;
+  }
+}
+
+// ---------------------------------------------------------------
+// 操作
+// ---------------------------------------------------------------
+async function doSet(args) {
+  try { applySettings(await send('set ' + args)); }
+  catch (e) { logLine(`[web] set ${args}: ${e.message}`); }
+}
+
+for (const seg of document.querySelectorAll('.seg[data-set]')) {
+  seg.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (b && state.connected) doSet(`${seg.dataset.set} ${b.dataset.v}`);
+  });
+}
+$('soundReset').addEventListener('click', () => doSet('sound reset'));
+
+// 音量: ドラッグ中は 150ms ごとに送る
+let volTimer = null;
+$('volSlider').addEventListener('input', () => {
+  volDragging = true;
+  $('volText').textContent = `${$('volSlider').value} dB`;
+  if (!volTimer) volTimer = setTimeout(sendVol, 150);
+});
+$('volSlider').addEventListener('change', () => { volDragging = false; sendVol(); });
+function sendVol() {
+  clearTimeout(volTimer);
+  volTimer = null;
+  send('vol ' + $('volSlider').value).then(applyVol).catch((e) => logLine('[web] vol: ' + e.message));
+}
+$('volUp').addEventListener('click', () => send('vol +').then(applyVol).catch(() => {}));
+$('volDown').addEventListener('click', () => send('vol -').then(applyVol).catch(() => {}));
+$('maxvolSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (b && state.connected) send('maxvol ' + b.dataset.v).then(applyVol).catch((err) => logLine('[web] ' + err.message));
+});
+$('artClear').addEventListener('click', async () => {
+  await idbDo('readwrite', (st) => st.clear());
+  artMemo.clear();
+  logLine('[web] 保存したアルバムアートを消去しました（次に表示するときに本体から取り直します）');
+});
+$('infoReload').addEventListener('click', () => send('info').then(renderInfo).catch((e) => logLine('[web] ' + e.message)));
+
+// ---------------------------------------------------------------
+// 再生（SD モード）
+// ---------------------------------------------------------------
+const now = { info: { track: -1 }, state: 'stop', elapsed: 0, at: 0, dragging: false };
+
+function fmtTime(s) {
+  s = Math.max(0, Math.floor(s));
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, sec = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+}
+
+function applyNow(m) {
+  now.info = m;
+  const has = m.track >= 0;
+  $('npTitle').textContent = has ? m.title : '曲が選ばれていません';
+  $('npArtist').textContent = has ? m.artist : '';
+  $('npAlbum').textContent = has ? m.album_name : '';
+  const fmt = $('npFmt');
+  fmt.textContent = '';
+  if (has) {
+    for (const t of [`${(m.rate / 1000).toString()} kHz`, `${m.bits} bit`, `${m.index} / ${m.count}`]) {
+      const c = document.createElement('span');
+      c.className = 'chip';
+      c.textContent = t;
+      fmt.append(c);
+    }
+  }
+  $('seekBar').max = has ? m.total : 0;
+  $('seekBar').disabled = !has;
+  $('totText').textContent = fmtTime(has ? m.total : 0);
+  setElapsed(0);   // 続けて pos 通知が来る
+  markCurrent();
+  showNowArt(m);
+  renderNowList();
+}
+
+function applyState(s) {
+  now.elapsed = currentElapsed();
+  now.at = performance.now();
+  now.state = s;
+  $('toggleIcon').innerHTML = s === 'play'
+    ? '<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>'
+    : '<path d="M8 5v14l11-7z"/>';
+}
+
+function currentElapsed() {
+  let e = now.elapsed;
+  if (now.state === 'play') e += (performance.now() - now.at) / 1000;
+  const total = now.info.total || 0;
+  return Math.min(e, total);
+}
+
+function setElapsed(sec) {
+  now.elapsed = sec;
+  now.at = performance.now();
+  renderPos();
+}
+
+function renderPos() {
+  if (now.dragging) return;
+  const e = currentElapsed();
+  $('seekBar').value = Math.floor(e);
+  $('posText').textContent = fmtTime(e);
+}
+setInterval(renderPos, 250);
+
+$('seekBar').addEventListener('input', () => {
+  now.dragging = true;
+  $('posText').textContent = fmtTime($('seekBar').value);
+});
+$('seekBar').addEventListener('change', () => {
+  const v = Number($('seekBar').value);
+  now.dragging = false;
+  setElapsed(v);   // 応答を待たずに表示を動かす
+  send('seek ' + v).then((r) => setElapsed(r.elapsed)).catch((e) => logLine('[web] seek: ' + e.message));
+});
+
+document.querySelector('.controls').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (b && state.connected) send(b.dataset.cmd, 6000).catch((err) => logLine(`[web] ${b.dataset.cmd}: ${err.message}`));
+});
+
+$('npArtist').addEventListener('click', () => {
+  const m = now.info;
+  if (m.track < 0 || m.artist_i == null) return;
+  openView({ level: 'albums', parent: m.artist_i, artist: m.artist_i, artistName: m.artist });
+  selectTab('library');
+});
+
+// 再生中のアルバムの曲一覧（再生タブ）。一覧はライブラリと共用（同じアルバムなら取り直さない）
+function renderNowList() {
+  const card = $('nowListCard');
+  const m = now.info;
+  if (!state.hello || state.hello.mode !== 'sd' || !lib.ready || m.track < 0) { card.hidden = true; return; }
+  card.hidden = false;
+  const v = { level: 'tracks', parent: m.album };
+  const c = cacheOf(v);
+  if (c.total === null || c.items.length < c.total) loadMore(v);   // 読み込み終わったらもう一度呼ばれる
+  $('nowListTitle').textContent = m.album_name || 'このアルバムの曲';
+  $('nowListSummary').textContent = libSummary(v, c);
+  const ul = $('nowList');
+  ul.textContent = '';
+  let cur = null;
+  c.items.forEach((it, k) => {
+    const li = document.createElement('li');
+    const playing = it.i === m.track;
+    if (playing) { li.className = 'current'; cur = li; }
+    const no = document.createElement('span');
+    no.className = 'no';
+    no.textContent = playing ? '▶' : k + 1;
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = it.name.replace(/\.wav$/i, '');
+    const cnt = document.createElement('span');
+    cnt.className = 'cnt';
+    if (it.ng) { cnt.textContent = '非対応'; cnt.classList.add('ng'); }
+    else if (it.dur != null) cnt.textContent = fmtTime(it.dur);
+    li.append(no, name, cnt);
+    li.addEventListener('click', () => send('play ' + it.i, 6000).catch((e) => logLine('[web] play: ' + e.message)));
+    ul.append(li);
+  });
+  if (c.total === null || c.items.length < c.total) {
+    const li = document.createElement('li');
+    li.className = 'more';
+    li.textContent = '読み込み中…';
+    ul.append(li);
+  }
+  return cur;
+}
+
+$('npAlbum').addEventListener('click', () => {
+  const m = now.info;
+  if (m.track < 0) return;
+  openView({ level: 'tracks', parent: m.album, artist: m.artist_i, artistName: m.artist, albumName: m.album_name });
+  selectTab('library');
+});
+
+// シャッフル（Web アプリからだけ）。再生タブの切替は今の曲のアーティスト・アルバムを範囲にする
+function applyShuffle(m) {
+  if (!m || m.shuffle == null) return;
+  now.shuffle = m.shuffle;
+  setSegStr($('shuffleSeg'), m.shuffle);
+}
+function setSegStr(seg, v) {
+  for (const b of seg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.v === v);
+}
+$('shuffleSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b || !state.connected) return;
+  const m = now.info, v = b.dataset.v;
+  let cmd = 'shuffle ' + v;
+  if (v === 'artist' || v === 'album') {
+    if (m.track < 0 || m.artist_i == null) { logLine('[web] 曲が選ばれていません'); return; }
+    cmd += ' ' + (v === 'artist' ? m.artist_i : m.album);
+  }
+  send(cmd, 8000).then(applyShuffle).catch((err) => logLine('[web] shuffle: ' + err.message));
+});
+
+function applyUsb(m) {
+  const names = { streaming: '再生中', connected: '接続済み（停止中）', suspended: 'PC がスリープ中', detached: 'PC と未接続' };
+  let t = names[m.usb] || m.usb || '—';
+  if (m.usb === 'streaming' && m.bits) t += `  ${m.rate / 1000} kHz / ${m.bits} bit`;
+  $('usbState').textContent = t;
+}
+
+// ---------------------------------------------------------------
+// ライブラリ（SD モード）
+// 一覧は 50 件ずつ取り、索引の世代（gen）ごとに覚える。世代が変わったら取り直す
+// ---------------------------------------------------------------
+const PAGE = 50;
+const lib = { gen: null, ready: false, view: { level: 'artists', parent: null }, cache: new Map(), loading: new Set() };
+
+function cacheOf(v) {
+  const key = `${v.level}:${v.parent == null ? '' : v.parent}`;
+  let c = lib.cache.get(key);
+  if (!c || c.gen !== lib.gen) {
+    c = { gen: lib.gen, total: null, items: [] };
+    lib.cache.set(key, c);
+  }
+  return c;
+}
+
+function applyLib(m) {
+  lib.ready = m.ready;
+  if (!m.ready) {
+    showLibMessage('SD カードが無いか、ライブラリを準備しています。');
+    renderNowList();
+    return;
+  }
+  if (m.gen !== lib.gen) {
+    lib.gen = m.gen;
+    lib.cache.clear();
+    artMemo.clear();
+  }
+  renderLib();
+  renderNowList();
+  showNowArt(now.info);   // 索引が使えるようになった・変わったときに再生中のアートを取り直す
+}
+
+function showLibMessage(msg) {
+  $('libList').textContent = '';
+  $('crumbs').textContent = '';
+  $('libSummary').textContent = '';
+  $('libShuffle').hidden = true;
+  $('albumHead').hidden = true;
+  $('artistHead').hidden = true;
+  $('libMsg').hidden = false;
+  $('libMsg').textContent = msg;
+}
+
+function openView(v) {
+  lib.view = v;
+  lib.scrollToCurrent = true;
+  renderLib();
+}
+
+async function loadMore(v) {
+  const c = cacheOf(v);
+  const key = `${v.level}:${v.parent == null ? '' : v.parent}`;
+  if (lib.loading.has(key)) return;
+  lib.loading.add(key);
+  const start = c.items.length;
+  const cmd = v.level === 'artists' ? `ls artists ${start} ${PAGE}` : `ls ${v.level} ${v.parent} ${start} ${PAGE}`;
+  try {
+    const r = await send(cmd, 10000);
+    if (r.gen !== lib.gen) {   // 取っている間に索引が変わった
+      applyLib({ gen: r.gen, ready: true });
+      return;
+    }
+    c.total = r.total;
+    c.items.push(...r.items);
+  } catch (e) {
+    logLine(`[web] ${cmd}: ${e.message}`);
+    if (e.code !== 'range') return;   // 読み込みを繰り返さない（次に一覧を開き直したときに再試行）
+    lib.view = { level: 'artists', parent: null };   // 親が無くなった（索引が変わった）
+  } finally {
+    lib.loading.delete(key);
+  }
+  renderLib();
+  renderNowList();
+}
+
+function renderCrumbs(v) {
+  const cr = $('crumbs');
+  cr.textContent = '';
+  const add = (text, onclick) => {
+    if (cr.childNodes.length) {
+      const s = document.createElement('span');
+      s.className = 'sep';
+      s.textContent = '›';
+      cr.append(s);
+    }
+    const el = document.createElement(onclick ? 'a' : 'span');
+    el.textContent = text;
+    if (onclick) el.addEventListener('click', onclick);
+    cr.append(el);
+  };
+  const top = () => openView({ level: 'artists', parent: null });
+  add('アーティスト', v.level === 'artists' ? null : top);
+  if (v.level !== 'artists') {
+    const toArtist = () => openView({ level: 'albums', parent: v.artist, artist: v.artist, artistName: v.artistName });
+    add(v.artistName || '…', v.level === 'tracks' && v.artist != null ? toArtist : null);
+  }
+  if (v.level === 'tracks') add(v.albumName || '…', null);
+}
+
+// 一覧の上の 1 行（件数。曲の一覧はアルバムの総曲長も）
+function libSummary(v, c) {
+  if (c.total == null) return '';
+  if (v.level === 'artists') return `${c.total} アーティスト`;
+  if (v.level === 'albums') return `${c.total} アルバム`;
+  let t = `${c.total} 曲`;
+  if (c.items.length === c.total && c.total) {
+    const known = c.items.filter((it) => it.dur != null);
+    const sum = known.reduce((a, it) => a + it.dur, 0);
+    t += ` ・ ${fmtTime(sum)}`;
+    if (known.length < c.total) t += '（非対応の曲を除く）';
+  }
+  return t;
+}
+
+// 一覧の範囲でシャッフル再生（トップ = 全曲、アーティストのアルバム一覧 = そのアーティスト、曲一覧 = そのアルバム）
+$('libShuffle').addEventListener('click', () => {
+  const v = lib.view;
+  const cmd = v.level === 'artists' ? 'shuffle all play'
+    : v.level === 'albums' ? `shuffle artist ${v.parent} play` : `shuffle album ${v.parent} play`;
+  send(cmd, 8000).then(applyShuffle).catch((e) => logLine('[web] shuffle: ' + e.message));
+});
+
+// ---------------------------------------------------------------
+// アルバムアート（付録 D.6）
+// art で画像の情報（key）を得て、ブラウザに保存が無ければ artget で 3.4KB ずつ受け取る。
+// 取り寄せは 1 つずつ順番に（本体の応答を詰まらせない）。優先度: 再生中 3 > アルバムの見出し 2 > パネルの縮小版 1
+// ---------------------------------------------------------------
+let idbP = null;
+function idb() {
+  if (!idbP) {
+    idbP = new Promise((res) => {
+      try {
+        const r = indexedDB.open('xiaodap-art', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('art');
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => res(null);
+      } catch (e) { res(null); }
+    });
+  }
+  return idbP;
+}
+async function idbDo(mode, fn) {
+  const db = await idb();
+  if (!db) return null;
+  return new Promise((res) => {
+    try {
+      const q = fn(db.transaction('art', mode).objectStore('art'));
+      q.onsuccess = () => res(q.result || null);
+      q.onerror = () => res(null);
+    } catch (e) { res(null); }
+  });
+}
+const idbGet = (k) => idbDo('readonly', (st) => st.get(k));
+const idbPut = (k, v) => idbDo('readwrite', (st) => st.put(v, k));
+
+function b64ToBytes(b) {
+  const s = atob(b);
+  const u = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+  return u;
+}
+
+const artMemo = new Map();   // `${gen}:${album}:${thumb}` → Promise<URL | null>
+const artQueue = [];
+let artBusy = false;
+
+// 画像の URL（無ければ null）。wanted() が false になった依頼は取り寄せずに捨てる（画面から消えたパネルなど）
+function requestArt(album, thumb, prio, wanted) {
+  const key = `${lib.gen}:${album}:${thumb ? 1 : 0}`;
+  if (artMemo.has(key)) return artMemo.get(key);
+  const p = new Promise((resolve) => {
+    artQueue.push({ album, thumb, prio, wanted: wanted || (() => true), resolve, key });
+    artQueue.sort((a, b) => b.prio - a.prio);
+  });
+  artMemo.set(key, p);
+  pumpArt();
+  return p;
+}
+
+async function pumpArt() {
+  if (artBusy) return;
+  artBusy = true;
+  while (artQueue.length && state.connected) {
+    const job = artQueue.shift();
+    if (!job.wanted()) {   // もう要らない。次に見えたときに頼み直せるよう覚えを消す
+      artMemo.delete(job.key);
+      job.resolve(null);
+      continue;
+    }
+    let url = null;
+    try { url = await loadArt(job.album, job.thumb); }
+    catch (e) {
+      logLine(`[web] アルバムアート #${job.album}: ${e.message}`);
+      artMemo.delete(job.key);   // 通信の失敗はやり直せるように
+    }
+    job.resolve(url);
+  }
+  // 切断で残った依頼は捨てる
+  for (const job of artQueue.splice(0)) { artMemo.delete(job.key); job.resolve(null); }
+  artBusy = false;
+}
+
+async function loadArt(album, thumb) {
+  const opt = thumb ? ' thumb' : '';
+  let info;
+  try { info = await send(`art ${album}${opt}`, 20000); }
+  catch (e) {
+    if (e.code === 'noart' || e.code === 'toobig') return null;
+    throw e;
+  }
+  let blob = await idbGet(info.key);
+  if (!blob) {
+    const parts = [];
+    const t0 = performance.now();
+    // 次の artget を先に送っておく（本体は受け取った順に 1 つずつ処理するので、返事を待つ間の空きが無くなる）
+    const chunk = info.chunk || 3456;
+    const inflight = [];
+    let req = 0;
+    while (req < info.size || inflight.length) {
+      while (inflight.length < 2 && req < info.size) {
+        inflight.push({ off: req, p: send(`artget ${album} ${req}${opt}`, 20000) });
+        req += chunk;
+      }
+      const job = inflight.shift();
+      let r;
+      try { r = await job.p; }
+      catch (e) {
+        for (const j of inflight) j.p.catch(() => {});   // 先に送った分の失敗は無視する
+        throw e;
+      }
+      for (const b of r.items) parts.push(b64ToBytes(b));
+      if (r.next !== Math.min(job.off + chunk, info.size)) throw new Error('転送の位置が合いません');
+    }
+    blob = new Blob(parts, { type: info.mime });
+    const sec = (performance.now() - t0) / 1000;
+    logLine(`[web] アルバムアート #${album}${opt} ${(info.size / 1024).toFixed(0)}KB ${sec.toFixed(1)} 秒` +
+      `（${(info.size / 1024 / Math.max(sec, 0.001)).toFixed(0)} KB/s、${info.src === 'id3' ? '曲に埋め込み' : 'ファイル'}）`);
+    idbPut(info.key, blob);
+  }
+  return URL.createObjectURL(blob);
+}
+
+// el に画像を入れる（見えたときに取り寄せる）
+const thumbObserver = new IntersectionObserver((ents) => {
+  for (const e of ents) {
+    if (!e.isIntersecting) continue;
+    thumbObserver.unobserve(e.target);
+    const el = e.target;
+    requestArt(Number(el.dataset.album), el.dataset.thumb === '1', 1, () => el.isConnected)
+      .then((url) => { if (url && el.isConnected) setArt(el, url); });
+  }
+}, { rootMargin: '200px' });
+
+function setArt(el, url) {
+  el.textContent = '';
+  if (!url) { el.textContent = '♪'; return; }
+  const img = document.createElement('img');
+  img.src = url;
+  img.alt = '';
+  el.append(img);
+}
+
+function watchArt(el, album, thumb) {
+  el.dataset.album = album;
+  el.dataset.thumb = thumb ? '1' : '0';
+  el.textContent = '♪';
+  thumbObserver.observe(el);
+}
+
+// 再生タブのアート（曲が変わったら）
+function showNowArt(m) {
+  const el = $('art');
+  if (!m || m.track < 0 || !lib.ready) { setArt(el, null); el.dataset.album = ''; return; }
+  if (el.dataset.album === String(m.album) && el.querySelector('img')) return;
+  el.dataset.album = m.album;
+  setArt(el, null);
+  requestArt(m.album, false, 3).then((url) => { if (url && now.info.album === m.album) setArt(el, url); });
+}
+
+// ---------------------------------------------------------------
+// ライブラリの表示（リスト / パネル）
+// パネル: アーティストは先頭のアルバムのアート、アルバムはそのアート。
+// 曲の一覧は上にアルバムのアート・アルバム名・アーティスト名・総曲長を出す
+// ---------------------------------------------------------------
+let libMode = 'list';
+try { libMode = localStorage.getItem('libMode') === 'panel' ? 'panel' : 'list'; } catch (e) {}
+function setLibMode(m) {
+  libMode = m;
+  try { localStorage.setItem('libMode', m); } catch (e) {}
+  setSegStr($('libMode'), m);
+  renderLib();
+}
+$('libMode').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (b) setLibMode(b.dataset.v);
+});
+
+function renderAlbumHead(v, c, show) {
+  const head = $('albumHead');
+  head.hidden = !show;
+  $('libSummary').hidden = show;
+  if (!show) return;
+  $('headTitle').textContent = v.albumName || '';
+  $('headArtist').textContent = v.artistName || '';
+  $('headNote').textContent = libSummary(v, c);
+  const el = $('headArt');
+  if (el.dataset.album !== String(v.parent) || !el.querySelector('img')) {
+    el.dataset.album = v.parent;
+    setArt(el, null);
+    requestArt(v.parent, false, 2).then((url) => { if (url && lib.view.parent === v.parent) setArt(el, url); });
+  }
+}
+
+let libObserver = null;
+function renderLib() {
+  if (!state.hello || state.hello.mode !== 'sd' || !lib.ready) return;
+  const v = lib.view;
+  const panel = libMode === 'panel';
+  const tiles = panel && v.level !== 'tracks';
+  setSegStr($('libMode'), libMode);
+  $('libMsg').hidden = true;
+  $('libShuffle').hidden = false;
+  renderCrumbs(v);
+  const c = cacheOf(v);
+  $('libSummary').textContent = libSummary(v, c);
+  renderAlbumHead(v, c, panel && v.level === 'tracks');
+  // アルバムの一覧（アーティストを開いたとき）は、上にアーティスト名を大きく出す
+  $('artistHead').hidden = v.level !== 'albums';
+  $('artistHead').textContent = v.level === 'albums' ? (v.artistName || '') : '';
+  const ul = $('libList');
+  ul.className = tiles ? 'grid' : 'list';
+  ul.textContent = '';
+  c.items.forEach((it, k) => {
+    const li = document.createElement('li');
+    li.dataset.i = it.i;
+    const no = document.createElement('span');
+    no.className = 'no';
+    const name = document.createElement('span');
+    name.className = 'name';
+    const cnt = document.createElement('span');
+    cnt.className = 'cnt';
+    let artAlbum = null;
+    if (v.level === 'artists') {
+      name.textContent = it.name;
+      cnt.textContent = `${it.albums} アルバム`;
+      artAlbum = it.albums ? it.a0 : null;
+      li.addEventListener('click', () => openView({ level: 'albums', parent: it.i, artist: it.i, artistName: it.name }));
+    } else if (v.level === 'albums') {
+      name.textContent = it.name;
+      cnt.textContent = `${it.tracks} 曲`;
+      artAlbum = it.i;
+      li.addEventListener('click', () =>
+        openView({ level: 'tracks', parent: it.i, artist: v.artist, artistName: v.artistName, albumName: it.name }));
+    } else {
+      no.textContent = k + 1;
+      name.textContent = it.name.replace(/\.wav$/i, '');
+      if (it.ng) { cnt.textContent = '非対応'; cnt.classList.add('ng'); }
+      else if (it.dur != null) cnt.textContent = fmtTime(it.dur);
+      li.addEventListener('click', () => send('play ' + it.i, 6000).catch((e) => logLine('[web] play: ' + e.message)));
+    }
+    if (tiles) {
+      const th = document.createElement('div');
+      th.className = 'thumb';
+      if (artAlbum != null) watchArt(th, artAlbum, true);
+      else th.textContent = '♪';
+      li.append(th, name, cnt);
+    } else {
+      li.append(no, name, cnt);
+    }
+    ul.append(li);
+  });
+  if (c.total === 0) {
+    const li = document.createElement('li');
+    li.className = 'more';
+    li.textContent = '（空）';
+    ul.append(li);
+  } else if (c.total === null || c.items.length < c.total) {
+    // 末尾が見えたら続きを取る
+    const li = document.createElement('li');
+    li.className = 'more';
+    li.textContent = '読み込み中…';
+    ul.append(li);
+    if (libObserver) libObserver.disconnect();
+    libObserver = new IntersectionObserver((ents) => { if (ents.some((e) => e.isIntersecting)) loadMore(v); });
+    libObserver.observe(li);
+  }
+  markCurrent();
+}
+
+// 再生中の曲（とそのアルバム・アーティスト）を強調する
+function markCurrent() {
+  const v = lib.view, m = now.info;
+  const cur = v.level === 'artists' ? m.artist_i : v.level === 'albums' ? m.album : m.track;
+  let target = null;
+  for (const li of $('libList').children) {
+    const on = m.track >= 0 && li.dataset.i !== undefined && Number(li.dataset.i) === cur;
+    li.classList.toggle('current', on);
+    if (on) target = li;
+  }
+  if (lib.scrollToCurrent && target && $('tab-library').classList.contains('active')) {
+    target.scrollIntoView({ block: 'center' });
+    lib.scrollToCurrent = false;
+  }
+}
+
+// ---------------------------------------------------------------
+// タブ・ログ
+// ---------------------------------------------------------------
+function selectTab(name) {
+  for (const x of $('tabs').children) x.classList.toggle('active', x.dataset.tab === name);
+  for (const s of document.querySelectorAll('section.tab')) s.classList.toggle('active', s.id === 'tab-' + name);
+  if (name === 'library') markCurrent();
+}
+$('tabs').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (b) selectTab(b.dataset.tab);
+});
+
+const LOG_MAX = 3000;
+const logLines = [];
+function logLine(text) {
+  const t = new Date().toLocaleTimeString('ja-JP', { hour12: false });
+  logLines.push(`${t}  ${text}`);
+  if (logLines.length > LOG_MAX) logLines.splice(0, logLines.length - LOG_MAX);
+  scheduleLogRender();
+}
+let logPending = false;
+function scheduleLogRender() {
+  if (logPending) return;
+  logPending = true;
+  requestAnimationFrame(() => {
+    logPending = false;
+    const el = $('log');
+    el.textContent = logLines.join('\n');
+    if ($('logFollow').checked) el.scrollTop = el.scrollHeight;
+  });
+}
+$('logClear').addEventListener('click', () => { logLines.length = 0; scheduleLogRender(); });
+$('logCopy').addEventListener('click', () => navigator.clipboard.writeText(logLines.join('\n')));
+
+// ---------------------------------------------------------------
+// 起動・自動接続
+// ---------------------------------------------------------------
+async function tryKnownPorts() {
+  if (state.port || !('serial' in navigator)) return;
+  for (const p of await navigator.serial.getPorts()) {
+    const info = p.getInfo();
+    if (!FILTERS.some((f) => f.usbVendorId === info.usbVendorId && f.usbProductId === info.usbProductId)) continue;
+    await openPort(p);
+    if (state.port) return;
+  }
+}
+
+if (!('serial' in navigator)) {
+  $('noSerial').hidden = false;
+  $('notConnected').hidden = true;
+  $('connectBtn').disabled = true;
+} else {
+  $('connectBtn').addEventListener('click', async () => {
+    try {
+      const p = await navigator.serial.requestPort({ filters: FILTERS });
+      await openPort(p, true);
+    } catch (e) {
+      if (e.name !== 'NotFoundError') logLine('[web] ' + e.message);   // NotFoundError = 選ばずに閉じた
+    }
+  });
+  navigator.serial.addEventListener('connect', () => tryKnownPorts());
+  navigator.serial.addEventListener('disconnect', (e) => { if (e.target === state.port) closePort(); });   // 受信ループが後始末する
+  // USB-DAC 切替後など、connect イベントが来ない場合に備えて定期的にも確かめる
+  setInterval(tryKnownPorts, 2000);
+  tryKnownPorts();
+  // USB-DAC モードの接続状態などの表示を保つ（通知の無い値）
+  setInterval(() => { if (state.hello) send('status').then(applyStatus).catch(() => {}); }, 5000);
+}
+</script>
+</body>
+</html>
