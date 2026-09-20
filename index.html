@@ -16,18 +16,34 @@
   --bg: #f4f5f7; --panel: #ffffff; --text: #1d2330; --muted: #6b7385; --line: #dde1e8;
   --accent: #2f6fde; --accent-text: #ffffff; --ok: #1f9d55; --warn: #c77700; --err: #d23c3c;
   --chip: #eef1f6; --log-bg: #0f1420; --log-text: #c9d3e6;
+  --scroll: rgba(29, 35, 48, .22); --scroll-hi: rgba(29, 35, 48, .38);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #12151c; --panel: #1b2029; --text: #e6e9ef; --muted: #98a1b3; --line: #2c3340;
     --accent: #5b8ff0; --accent-text: #0d1117; --ok: #3ccf7f; --warn: #f0a93b; --err: #f06a6a;
     --chip: #252b36; --log-bg: #0b0e14; --log-text: #b9c4d8;
+    --scroll: rgba(230, 233, 239, .18); --scroll-hi: rgba(230, 233, 239, .34);
   }
 }
 * { box-sizing: border-box; }
+/* スクロールバーは背景になじませる（細く・軌道は透明・つまみは半透明） */
+* { scrollbar-width: thin; scrollbar-color: var(--scroll) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--scroll); border: 3px solid transparent; background-clip: padding-box;
+  border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scroll-hi); background-clip: padding-box; }
+/* 濃い背景の上（ログ）は明るいつまみにする */
+#log { scrollbar-color: rgba(201, 211, 230, .22) transparent; }
+#log::-webkit-scrollbar-thumb { background: rgba(201, 211, 230, .22); background-clip: padding-box; }
+#log::-webkit-scrollbar-thumb:hover { background: rgba(201, 211, 230, .4); background-clip: padding-box; }
 /* hidden 属性を必ず効かせる（display を指定した要素では、そのままだと hidden が負けて表示されてしまう） */
 [hidden] { display: none !important; }
-body { margin: 0; background: var(--bg); color: var(--text);
+/* アプリ風の 1 画面レイアウト: ヘッダーは固定、パネルの中だけが縦にスクロールする。
+   タブは横一列に並べた帯（#track）を transform でずらして切り替える（右のタブ → 帯が左へ流れる） */
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); display: flex; flex-direction: column; overflow: hidden;
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif; }
 header { position: sticky; top: 0; z-index: 2; background: var(--panel); border-bottom: 1px solid var(--line); }
 .bar { max-width: 880px; margin: 0 auto; padding: 10px 16px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -35,6 +51,9 @@ header { position: sticky; top: 0; z-index: 2; background: var(--panel); border-
 .bar h1 .logo { width: 26px; height: 26px; flex: none; }
 .chip { font-size: 12px; padding: 2px 9px; border-radius: 99px; background: var(--chip); color: var(--muted); white-space: nowrap; }
 .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.err { color: var(--err); }
+/* MAX VOL MODE（0dB 固定）は見落とすと危ないので、ON のときだけ塗りつぶして目立たせる */
+.chip.alert { background: var(--err); color: #fff; font-weight: 700; letter-spacing: .02em; }
+.note.warn { color: var(--warn); }
 .spacer { flex: 1; }
 button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
   border-radius: 8px; padding: 6px 14px; cursor: pointer; }
@@ -44,8 +63,58 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 nav { max-width: 880px; margin: 0 auto; padding: 0 16px; display: flex; gap: 2px; overflow-x: auto; }
 nav button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 14px; color: var(--muted); }
 nav button.active { color: var(--text); border-bottom-color: var(--accent); }
-main { max-width: 880px; margin: 0 auto; padding: 16px; }
-section.tab { display: none; } section.tab.active { display: block; }
+main { max-width: 880px; width: 100%; margin: 0 auto; flex: 1; min-height: 0; display: flex; flex-direction: column;
+  overflow: hidden; }
+main > .banner { margin: 16px 16px 0; }
+#track { flex: 1; min-height: 0; display: flex; will-change: transform;
+  transition: transform .34s cubic-bezier(.22, .68, .18, 1); }
+/* 画面が狭いときは、パネルの中で横にもスクロールできるようにする（中身が切れて届かなくならないように） */
+section.tab { flex: 0 0 100%; min-width: 100%; overflow: auto; padding: 16px; scrollbar-gutter: stable; }
+/* ログはパネルいっぱいに広げる */
+#tab-log { display: flex; flex-direction: column; }
+#tab-log .logbar { flex: none; }
+@media (prefers-reduced-motion: reduce) { #track { transition: none; } }
+
+/* ---- 再生パネル: 再生タブでは大きなカード、他のタブでは画面下のバーに変形する ----
+   帯（#track）は transform で動くので、その中では position: fixed が画面基準にならない。
+   そのため変形の間は #playerLayer へ持ち出し、位置と大きさを実測して補間する（FLIP） */
+#playerSlot { margin-bottom: 14px; }
+#playerCard.floating { position: fixed; z-index: 30; margin: 0; overflow: hidden;
+  transition: left .36s cubic-bezier(.22,.68,.18,1), top .36s cubic-bezier(.22,.68,.18,1),
+              width .36s cubic-bezier(.22,.68,.18,1), height .36s cubic-bezier(.22,.68,.18,1),
+              padding .36s cubic-bezier(.22,.68,.18,1), border-radius .36s cubic-bezier(.22,.68,.18,1); }
+#playerCard.floating.mini { box-shadow: 0 -6px 24px rgba(0, 0, 0, .18); border-bottom: none;
+  border-radius: 14px 14px 0 0; }
+/* 中身も一緒に縮める */
+#playerCard .art, #playerCard .meta .title, #playerCard .controls button, #playerCard .seek,
+#playerCard .now { transition: width .36s cubic-bezier(.22,.68,.18,1), height .36s cubic-bezier(.22,.68,.18,1),
+  font-size .36s cubic-bezier(.22,.68,.18,1), margin .36s cubic-bezier(.22,.68,.18,1), gap .36s ease; }
+#playerCard.mini { display: flex; align-items: center; gap: 14px; padding: 8px 14px; }
+#playerCard.mini .now { flex: 0 1 30%; min-width: 0; gap: 10px; }
+#playerCard.mini .art { width: 44px; height: 44px; border-radius: 8px; font-size: 20px; }
+#playerCard.mini .meta { min-width: 0; }
+#playerCard.mini .meta .title { font-size: 14px; }
+#playerCard.mini .meta .title, #playerCard.mini .meta .sub { white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+#playerCard.mini .meta .sub { font-size: 11.5px; }
+#playerCard.mini .meta .sub:has(#npAlbum) { display: none; }   /* バーでは曲名とアーティストだけ */
+#playerCard.mini .fmt, #playerCard.mini .shufrow, #playerCard.mini > .note { display: none; }
+#playerCard.mini .seek { flex: 1; margin: 0; min-width: 120px; }
+#playerCard.mini .controls { flex: none; margin: 0; gap: 6px; }
+#playerCard.mini .controls button { width: 34px; height: 34px; }
+#playerCard.mini .controls button.main { width: 40px; height: 40px; }
+#playerCard.mini .controls svg { width: 17px; height: 17px; }
+#playerCard.mini .controls button.main svg { width: 20px; height: 20px; }
+/* バーのぶんだけ、パネルの下に余白を足す */
+body.has-mini section.tab { padding-bottom: 86px; }
+@media (max-width: 620px) {
+  #playerCard.mini .controls [data-cmd="prevalbum"], #playerCard.mini .controls [data-cmd="nextalbum"] { display: none; }
+  #playerCard.mini .meta .sub { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #playerCard.floating, #playerCard .art, #playerCard .meta .title, #playerCard .controls button,
+  #playerCard .seek, #playerCard .now { transition: none; }
+}
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
 .card h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); font-weight: 600; letter-spacing: .04em; }
 .row { display: flex; align-items: center; gap: 12px; padding: 7px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
@@ -64,7 +133,7 @@ table.info { border-collapse: collapse; width: 100%; }
 table.info td { padding: 6px 4px; border-top: 1px solid var(--line); vertical-align: top; }
 table.info tr:first-child td { border-top: none; }
 table.info td:first-child { color: var(--muted); width: 38%; }
-#log { background: var(--log-bg); color: var(--log-text); border-radius: 10px; padding: 10px 12px; height: 60vh; overflow: auto;
+#log { background: var(--log-bg); color: var(--log-text); border-radius: 10px; padding: 10px 12px; flex: 1; min-height: 120px; overflow: auto;
   font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; word-break: break-all; margin: 0; }
 .logbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
 .empty { text-align: center; padding: 40px 16px; color: var(--muted); }
@@ -84,6 +153,25 @@ table.info td:first-child { color: var(--muted); width: 38%; }
 .fmt { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
 .seek { display: flex; align-items: center; gap: 10px; margin-top: 16px; font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
 .seek input { flex: 1; accent-color: var(--accent); }
+/* L/R レベルメーター（再生画面のみ。本体の画面には出さない） */
+.meters { display: grid; grid-template-columns: auto 1fr; gap: 5px 8px; align-items: center; }
+.meters .lab { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.meters .mbar { position: relative; height: 9px; border-radius: 5px; background: var(--chip); overflow: hidden; }
+.meters .fill { position: absolute; inset: 0;
+  background: linear-gradient(90deg, var(--ok) 0%, var(--ok) 70%, var(--warn) 86%, var(--err) 100%);
+  clip-path: inset(0 100% 0 0); }
+.meters .pk { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--text); opacity: .55; left: 0; }
+.meters .scale { grid-column: 2; position: relative; height: 13px; color: var(--muted); font-size: 10px;
+  font-variant-numeric: tabular-nums; }
+.meters .scale span { position: absolute; transform: translateX(-50%); }
+.meters .scale span:first-child { transform: none; }
+.meters .scale span:last-child { transform: translateX(-100%); }
+.meters.clip .lab { color: var(--err); }
+.prerow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.prebar { height: 6px; border-radius: 3px; background: var(--chip); overflow: hidden; margin-top: 8px; }
+.prebar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s ease; }
+#mtrAtten { margin-top: 10px; line-height: 1.6; }
+#mtrAtten div:last-child { opacity: .8; }
 .controls { display: flex; justify-content: center; gap: 10px; margin-top: 12px; }
 .controls button { width: 48px; height: 48px; padding: 0; border-radius: 50%; display: grid; place-items: center; }
 .controls button.main { width: 60px; height: 60px; background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
@@ -100,8 +188,11 @@ table.info td:first-child { color: var(--muted); width: 38%; }
 .list li:hover { background: var(--chip); }
 .list li.current { color: var(--accent); font-weight: 600; }
 .list .no { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 2.2em; text-align: right; font-size: 13px; }
-.list .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.list .cnt { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.list .name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 16px; }
+.list .cnt { color: var(--muted); font-size: 13.5px; white-space: nowrap; }
+/* リスト表示のアルバムアート（パネル表示の 1/4 の大きさ） */
+.list .thumb { width: 40px; height: 40px; flex: none; border-radius: 6px; background: var(--chip); color: var(--muted);
+  display: grid; place-items: center; overflow: hidden; font-size: 18px; }
 .list li.more { justify-content: center; color: var(--muted); cursor: default; }
 .list .cnt.ng { color: var(--warn); }
 #nowList li.current .no { color: var(--accent); }
@@ -118,7 +209,7 @@ table.info td:first-child { color: var(--muted); width: 38%; }
 .grid li { cursor: pointer; min-width: 0; }
 .grid .thumb { aspect-ratio: 1; border-radius: 10px; background: var(--chip); color: var(--muted); display: grid; place-items: center;
   font-size: 34px; overflow: hidden; }
-.grid .thumb img, .albumhead .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.grid .thumb img, .list .thumb img, .albumhead .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .grid .name { display: block; margin-top: 6px; font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; }
 .grid .cnt { display: block; color: var(--muted); font-size: 12px; }
 .grid li:hover .thumb { outline: 2px solid var(--accent); }
@@ -142,7 +233,7 @@ table.info td:first-child { color: var(--muted); width: 38%; }
     <span id="connChip" class="chip">未接続</span>
     <span id="modeChip" class="chip" hidden></span>
     <span id="hwChip" class="chip" hidden title="認識している DAC / PLL（機器情報タブに詳細）"></span>
-    <span id="dispChip" class="chip" hidden></span>
+    <span id="maxvolChip" class="chip" hidden></span>
     <span class="spacer"></span>
     <button id="modeBtn" disabled title="SD モード ⇔ USB-DAC モード（本体が再起動します）">モード切替</button>
     <button id="connectBtn" class="primary">接続</button>
@@ -159,8 +250,17 @@ table.info td:first-child { color: var(--muted); width: 38%; }
 <main>
   <div id="noSerial" class="banner err" hidden>このブラウザは Web Serial に対応していません。PC の Chrome か Edge で開いてください。</div>
   <div id="switchBanner" class="banner" hidden></div>
+  <div id="preBanner" class="banner" hidden>
+    <div class="prerow">
+      <span id="preMsg" class="spacer"></span>
+      <button id="preGo" class="primary">まとめて読み込む</button>
+      <button id="preStop" hidden>中止</button>
+    </div>
+    <div class="prebar" id="preBar" hidden><div id="preFill"></div></div>
+  </div>
   <div id="notConnected" class="banner">XIAO DAP を USB でつなぎ、「接続」を押してください。一度許可すると、次からは自動でつながります。</div>
 
+  <div id="track">
   <section id="tab-play" class="tab active">
     <div class="card">
       <h2>音量</h2>
@@ -176,7 +276,16 @@ table.info td:first-child { color: var(--muted); width: 38%; }
         <div class="seg" id="maxvolSeg"><button data-v="0">OFF</button><button data-v="1">ON</button></div>
       </div>
     </div>
-    <div class="card" id="playerCard">
+    <div class="card" id="meterCard" hidden>
+      <h2>レベルメーター</h2>
+      <div class="meters" id="meters" aria-hidden="true">
+        <span class="lab">L</span><div class="mbar"><div class="fill" id="mtrLF"></div><div class="pk" id="mtrLP"></div></div>
+        <span class="lab">R</span><div class="mbar"><div class="fill" id="mtrRF"></div><div class="pk" id="mtrRP"></div></div>
+        <div class="scale"><span style="left:0">-60</span><span style="left:33.3%">-40</span><span style="left:66.7%">-20</span><span style="left:80%">-12</span><span style="left:90%">-6</span><span style="left:100%">0dB</span></div>
+      </div>
+      <div class="note" id="mtrAtten"></div>
+    </div>
+    <div id="playerSlot"><div class="card" id="playerCard">
       <div class="now">
         <div class="art" id="art" aria-hidden="true">♪</div>
         <div class="meta">
@@ -205,7 +314,7 @@ table.info td:first-child { color: var(--muted); width: 38%; }
         </div>
       </div>
       <p class="note">アーティスト・アルバムは再生中の曲が基準です。本体の「次の曲」「前の曲」もシャッフルの順になります（電源を切るまで続きます）。</p>
-    </div>
+    </div></div>
     <div class="card" id="nowListCard" hidden>
       <h2 id="nowListTitle">このアルバムの曲</h2>
       <div class="note" id="nowListSummary"></div>
@@ -264,6 +373,28 @@ table.info td:first-child { color: var(--muted); width: 38%; }
       <p class="note">ヘッドホン・イヤホン向けに、左右の広がりを整えます（低い音ほど中央に寄ります）。
         SD モードと USB-DAC モードのどちらでも効きます。桁溢れを避けるため、ON の間は全体の音量が 3〜5dB 下がります
         （USB-DAC モードでは、ON の間はビットパーフェクトではなくなります）。</p>
+      <div class="row"><label>低音（dB）</label>
+        <div class="seg" data-set="bass"><button data-v="-6">-6</button><button data-v="-4">-4</button><button data-v="-2">-2</button><button data-v="0">0</button><button data-v="2">+2</button><button data-v="4">+4</button><button data-v="6">+6</button></div></div>
+      <div class="row"><label>高音（dB）</label>
+        <div class="seg" data-set="treble"><button data-v="-6">-6</button><button data-v="-4">-4</button><button data-v="-2">-2</button><button data-v="0">0</button><button data-v="2">+2</button><button data-v="4">+4</button><button data-v="6">+6</button></div></div>
+      <p class="note">低音は約 230Hz 以下、高音は約 3.4kHz 以上を持ち上げ下げします（1kHz への影響は 1dB 未満）。
+        0 / 0 のときは音声データを一切通しません。持ち上げると桁溢れを避けるため全体が 1.8〜7.2dB 下がります。</p>
+      <div class="row"><label>ヘッドルーム</label>
+        <div class="seg" data-set="headroom"><button data-v="0">OFF</button><button data-v="1">-1dB</button><button data-v="2">-2dB</button><button data-v="3">-3dB</button></div></div>
+      <p class="note">最近の曲はサンプルの間で 0dBFS を超えることがあり、DAC の中で歪みます。あらかじめ下げておくと避けられます
+        （DAC の音量で下げるので、音声データは加工しません）。MAX VOL MODE のときも効きます。</p>
+      <div class="row"><label>左右バランス</label>
+        <div class="seg" data-set="balance"><button data-v="-3">L3</button><button data-v="-2">L2</button><button data-v="-1">L1</button><button data-v="0">中央</button><button data-v="1">R1</button><button data-v="2">R2</button><button data-v="3">R3</button></div></div>
+      <p class="note">左右の音量差を 1dB 刻みで調整します（下げる側だけに効かせるので歪みは増えません）。</p>
+      <div class="row"><label>リプレイゲイン補正</label>
+        <div class="seg" data-set="again"><button data-v="0">OFF</button><button data-v="1">ON</button></div></div>
+      <p class="note" id="againNote">アルバムごとの音量差をそろえます。SD カードを PC に挿し、
+        <b>XIAO_DAP_ReplayGain.exe</b> で測っておいてください（ラウドネスを ITU-R BS.1770-4 で測り、
+        カードに /XIAODAP/GAIN.BIN を書きます。アルバムを足したときは、足した分だけ測り直します）。
+        本体はその値を DAC の音量で下げるだけなので、音声データは加工しません。
+        大きいアルバムが下がるので、全体の音量は上げてお使いください。
+        <b>OFF に戻すときは、下げていた分がそのまま戻って急に大きくなるため、本体が自動で一時停止し、
+        MAX VOL MODE を解除して音量を -30dB まで下げます。</b></p>
     </div>
     <div class="card">
       <h2>音質調整 <span id="soundDac"></span></h2>
@@ -276,6 +407,12 @@ table.info td:first-child { color: var(--muted); width: 38%; }
     <div class="card">
       <h2>機器情報</h2>
       <table class="info" id="infoTable"></table>
+      <div class="row"><label for="artPreChk">接続したらアルバムアートをまとめて読み込む</label>
+        <span class="note">再生中なら一度止めます</span>
+        <input type="checkbox" id="artPreChk"></div>
+      <div class="row"><label for="artPlayChk">再生中もアルバムアートを読み込む</label>
+        <span class="note">音が途切れることがあります</span>
+        <input type="checkbox" id="artPlayChk"></div>
       <div class="row"><span class="spacer"></span><button id="artClear" title="ブラウザに保存したアルバムアートを消す（次に表示するときに本体から取り直す）">保存したアルバムアートを消去</button><button id="infoReload">再読み込み</button></div>
     </div>
   </section>
@@ -290,6 +427,8 @@ table.info td:first-child { color: var(--muted); width: 38%; }
     </div>
     <pre id="log"></pre>
   </section>
+  </div>
+  <div id="playerLayer"></div>
 </main>
 
 <script>
@@ -305,6 +444,15 @@ const FILTERS = [
 const BAUD = 115200;   // 1200 は書き込みモードに入るので使わない
 
 const $ = (id) => document.getElementById(id);
+// アートのまとめて読み込み（接続したときに未取得のぶんを先に読む）
+let preAuto = false;
+try { preAuto = localStorage.getItem('artPreload') === '1'; } catch (e) {}
+const pre = { run: false, cancel: false, done: 0, total: 0, t0: 0, resume: false };
+
+// 再生中もアルバムアートを読み込むか（既定は読み込まない。本体の締め切りが厳しく音が途切れるため）
+let artWhilePlaying = false;
+try { artWhilePlaying = localStorage.getItem('artWhilePlaying') === '1'; } catch (e) {}
+
 const state = { port: null, reader: null, writer: null, connected: false, hello: null,
   settings: null, soundItems: [], vol: null, status: null };
 
@@ -399,9 +547,15 @@ async function cleanup(port) {
   for (const [, w] of waiting) { clearTimeout(w.timer); w.reject(new Error('切断されました')); }
   waiting.clear();
   setConnChip('未接続');
+  pre.cancel = true;
+  $('preBanner').hidden = true;
+  setMini(false);   // 画面下のバーは戻す
+  mtr.want = false;
+  mtr.on = false;
+  $('meterCard').hidden = true;
   $('modeChip').hidden = true;
   $('hwChip').hidden = true;
-  $('dispChip').hidden = true;
+  $('maxvolChip').hidden = true;
   $('notConnected').hidden = !!modeSwitch;   // 切替中は切替の案内だけ出す
   $('connectBtn').hidden = !!modeSwitch;
   $('modeBtn').disabled = true;
@@ -458,6 +612,8 @@ async function startSession() {
   }
   applyHello(h);
   await refreshAll();
+  mtrUpdate();   // 再生画面を見ているなら、レベルメーターを始める
+  preCheck(true);   // アートが未取得なら知らせる（設定によっては自動で読み込む）
 }
 
 function applyHello(h) {
@@ -471,6 +627,7 @@ function applyHello(h) {
   $('gaplessNote').textContent = h.mode === 'usbdac' ? 'SD モードのみ' : '';
   const usb = h.mode === 'usbdac';
   $('playerCard').hidden = usb;
+  if (usb) setMini(false);   // USB-DAC モードでは画面下のバーを出さない
   $('usbCard').hidden = !usb;
   renderNowList();
   const mb = $('modeBtn');
@@ -551,9 +708,9 @@ function onEvent(m) {
         send('settings').then((s) => applySettings(s, s.items)).catch(() => {});
       else applySettings(m);
       break;
-    case 'disp': applyDisp(m.disp); break;
     case 'track': applyNow(m); break;
     case 'state': applyState(m.state); break;
+    case 'lvl': mtrApply(m); break;
     case 'pos': setElapsed(m.elapsed); break;
     case 'lib': applyLib(m); break;
     case 'usb': applyUsb(m); break;
@@ -567,7 +724,6 @@ function onEvent(m) {
 function applyStatus(s) {
   state.status = s;
   applyVol(s);
-  applyDisp(s.disp);
   if (s.mode === 'sd') {
     applyState(s.state);
     applyShuffle(s);
@@ -577,15 +733,23 @@ function applyStatus(s) {
   }
 }
 
-function applyDisp(disp) {
-  const c = $('dispChip');
-  c.hidden = disp !== 'off';
-  c.textContent = '本体の画面: 消灯中';
+// ヘッダーの MAX VOL 表示。0dB 固定は見落とすと危ないので、ON のときは赤く塗る
+function applyMaxvolChip() {
+  const c = $('maxvolChip');
+  const v = state.vol;
+  if (!state.connected || !v) { c.hidden = true; return; }
+  c.hidden = false;
+  const on = !!v.maxvol, pending = !!v.maxvol_pending;
+  c.textContent = pending ? 'MAX VOL 切替中…' : on ? 'MAX VOL MODE 0dB' : 'MAX VOL: OFF';
+  c.classList.toggle('alert', on);
+  c.classList.toggle('warn', !on && pending);
 }
 
 let volDragging = false;
 function applyVol(v) {
   state.vol = v;
+  mtrAtten();
+  applyMaxvolChip();
   $('volText').textContent = v.maxvol ? 'MAX' : `${v.vol} dB`;
   if (!volDragging) $('volSlider').value = v.vol;
   const locked = v.maxvol || v.maxvol_pending;
@@ -598,11 +762,28 @@ function setSeg(seg, v) {
   for (const b of seg.querySelectorAll('button')) b.classList.toggle('on', Number(b.dataset.v) === Number(v));
 }
 
+let againNote0 = '';   // 「リプレイゲイン補正」の既定の説明文
+
 function applySettings(s, items) {
   state.settings = s;
+  mtrAtten();
   for (const seg of document.querySelectorAll('.seg[data-set]')) setSeg(seg, s[seg.dataset.set]);
   const sdOnly = state.hello && state.hello.mode === 'usbdac';
   for (const b of document.querySelectorAll('.seg[data-set="gapless"] button')) b.disabled = sdOnly;
+  // リプレイゲイン補正は SD モード限定。GAIN.BIN が無い（または索引と合わない）ときは操作できない
+  const noGain = sdOnly || s.again_ready === false;
+  for (const b of document.querySelectorAll('.seg[data-set="again"] button')) b.disabled = noGain;
+  const stale = !sdOnly && s.again_ready === false;
+  const note = $('againNote');
+  if (!againNote0) againNote0 = note.innerHTML;   // 最初の説明文を覚えておく
+  note.classList.toggle('warn', stale);
+  if (stale) {
+    note.textContent = 'SD カードに GAIN.BIN がないか、ライブラリの中身と合っていません。'
+      + 'PC で XIAO_DAP_ReplayGain.exe を実行して作り直してください'
+      + '（測定の控えがあるので、足したアルバムだけを測ります）。';
+  } else {
+    note.innerHTML = againNote0;
+  }
   if (items) {
     state.soundItems = items;
     const rows = $('soundRows');
@@ -629,6 +810,7 @@ function applySettings(s, items) {
 function hex(n) { return '0x' + n.toString(16).toUpperCase().padStart(2, '0'); }
 
 function renderInfo(i) {
+  state.info = i;   // アルバム数などを覚えておく（アートのまとめて読み込みで使う）
   // ヘッダーに認識している DAC / PLL
   const hw = $('hwChip');
   hw.hidden = false;
@@ -691,9 +873,25 @@ $('maxvolSeg').addEventListener('click', (e) => {
   const b = e.target.closest('button');
   if (b && state.connected) send('maxvol ' + b.dataset.v).then(applyVol).catch((err) => logLine('[web] ' + err.message));
 });
+$('artPlayChk').checked = artWhilePlaying;
+$('artPlayChk').addEventListener('change', (e) => {
+  artWhilePlaying = e.target.checked;
+  try { localStorage.setItem('artWhilePlaying', artWhilePlaying ? '1' : '0'); } catch (err) {}
+  if (artWhilePlaying) pumpArt();
+});
+
+$('preGo').addEventListener('click', preStart);
+$('preStop').addEventListener('click', () => { pre.cancel = true; });
+$('artPreChk').checked = preAuto;
+$('artPreChk').addEventListener('change', (e) => {
+  preAuto = e.target.checked;
+  try { localStorage.setItem('artPreload', preAuto ? '1' : '0'); } catch (err) {}
+});
+
 $('artClear').addEventListener('click', async () => {
   await idbDo('readwrite', (st) => st.clear());
   artMemo.clear();
+  preCheck(false);
   logLine('[web] 保存したアルバムアートを消去しました（次に表示するときに本体から取り直します）');
 });
 $('infoReload').addEventListener('click', () => send('info').then(renderInfo).catch((e) => logLine('[web] ' + e.message)));
@@ -711,6 +909,8 @@ function fmtTime(s) {
 
 function applyNow(m) {
   now.info = m;
+  mtrAtten();   // アルバムごとの音量合わせは曲（アルバム）で変わる
+  if (curTab !== 'play') setMini(miniAvailable());   // 再生タブ以外なら、曲の有無に合わせてバーを出し入れ
   const has = m.track >= 0;
   $('npTitle').textContent = has ? m.title : '曲が選ばれていません';
   $('npArtist').textContent = has ? m.artist : '';
@@ -741,6 +941,7 @@ function applyState(s) {
   $('toggleIcon').innerHTML = s === 'play'
     ? '<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>'
     : '<path d="M8 5v14l11-7z"/>';
+  if (s !== 'play') pumpArt();   // 再生が止まったら、待たせていたアートを取り寄せる
 }
 
 function currentElapsed() {
@@ -1044,10 +1245,17 @@ function requestArt(album, thumb, prio, wanted) {
   return p;
 }
 
+// 再生中はアートを取り寄せない（本体は 1 ブロック 11.6ms のうち 8ms を音声の充填に使っており、
+// SD カードが 12ms 待たされる回があると音が途切れる）。一時停止・停止したらまとめて取り寄せる
+function artAllowed() {
+  return artWhilePlaying || now.state !== 'play';
+}
+
 async function pumpArt() {
   if (artBusy) return;
   artBusy = true;
   while (artQueue.length && state.connected) {
+    if (!artAllowed()) break;   // 再生が止まったら pumpArt() が呼び直される
     const job = artQueue.shift();
     if (!job.wanted()) {   // もう要らない。次に見えたときに頼み直せるよう覚えを消す
       artMemo.delete(job.key);
@@ -1057,8 +1265,13 @@ async function pumpArt() {
     let url = null;
     try { url = await loadArt(job.album, job.thumb); }
     catch (e) {
+      artMemo.delete(job.key);   // 通信の失敗・本体が忙しいときはやり直せるように
+      if (e.code === 'busy') {   // 本体が忙しい（再生中の締め切り）。少し待ってやり直す
+        artQueue.push(job);
+        await new Promise((r) => setTimeout(r, 1500));
+        continue;
+      }
       logLine(`[web] アルバムアート #${job.album}: ${e.message}`);
-      artMemo.delete(job.key);   // 通信の失敗はやり直せるように
     }
     job.resolve(url);
   }
@@ -1067,14 +1280,30 @@ async function pumpArt() {
   artBusy = false;
 }
 
+// 鍵（key）の覚え書き。art の応答でしか分からないが、**この art こそが本体の重い処理**
+// （フォルダの走査・WAV のヘッダ走査で 12〜14.5ms）なので、覚えておいて 2 回目以降は送らない。
+// 索引の世代（gen）を含めるので、SD を入れ替えたり曲を増減すると自動で無効になる
+const keyName = (album, thumb) => `k:${lib.gen}:${album}:${thumb ? 1 : 0}`;
+
 async function loadArt(album, thumb) {
   const opt = thumb ? ' thumb' : '';
+  // 鍵を覚えていて、画像も残っていれば、本体には何も頼まない
+  const known = await idbGet(keyName(album, thumb));
+  if (known) {
+    if (known === 'none') return null;            // アートが無いアルバム
+    const b = await idbGet(known);
+    if (b) return URL.createObjectURL(b);
+  }
   let info;
   try { info = await send(`art ${album}${opt}`, 20000); }
   catch (e) {
-    if (e.code === 'noart' || e.code === 'toobig') return null;
+    if (e.code === 'noart' || e.code === 'toobig') {
+      idbPut(keyName(album, thumb), 'none');
+      return null;
+    }
     throw e;
   }
+  idbPut(keyName(album, thumb), info.key);
   let blob = await idbGet(info.key);
   if (!blob) {
     const parts = [];
@@ -1190,7 +1419,8 @@ function renderLib() {
   renderCrumbs(v);
   const c = cacheOf(v);
   $('libSummary').textContent = libSummary(v, c);
-  renderAlbumHead(v, c, panel && v.level === 'tracks');
+  $('libMode').hidden = v.level === 'tracks';   // 曲の一覧は常にこの形（切替は要らない）
+  renderAlbumHead(v, c, v.level === 'tracks');
   // アルバムの一覧（アーティストを開いたとき）は、上にアーティスト名を大きく出す
   $('artistHead').hidden = v.level !== 'albums';
   $('artistHead').textContent = v.level === 'albums' ? (v.artistName || '') : '';
@@ -1225,14 +1455,14 @@ function renderLib() {
       else if (it.dur != null) cnt.textContent = fmtTime(it.dur);
       li.addEventListener('click', () => send('play ' + it.i, 6000).catch((e) => logLine('[web] play: ' + e.message)));
     }
-    if (tiles) {
+    if (v.level === 'tracks') {
+      li.append(no, name, cnt);
+    } else {   // アーティスト・アルバムは、パネルでもリストでもアートを出す
       const th = document.createElement('div');
       th.className = 'thumb';
       if (artAlbum != null) watchArt(th, artAlbum, true);
       else th.textContent = '♪';
       li.append(th, name, cnt);
-    } else {
-      li.append(no, name, cnt);
     }
     ul.append(li);
   });
@@ -1271,11 +1501,261 @@ function markCurrent() {
 }
 
 // ---------------------------------------------------------------
+// アルバムアートのまとめて読み込み
+//   再生中は本体に余裕が無く、アートの取り寄せ（1 回 12〜14.5ms の SD 読み出し）で音が途切れる。
+//   そこで、止まっている間に全アルバムぶんを先に読んでブラウザに保存しておく。
+//   一度読めば鍵ごと覚えるので、以降は本体に何も頼まずに表示できる（再生中も安心）。
+// ---------------------------------------------------------------
+
+// まだ持っていないアルバムの番号（thumb と原寸の両方を見る）
+async function preMissing() {
+  const n = (state.info && state.info.albums) || 0;
+  const out = [];
+  for (let a = 0; a < n; a++) {
+    const t = await idbGet(keyName(a, true));
+    const f = await idbGet(keyName(a, false));
+    if (!t || !f) out.push(a);
+  }
+  return out;
+}
+
+function preText(msg, busy) {
+  const b = $('preBanner');
+  b.hidden = false;
+  $('preMsg').textContent = msg;
+  $('preGo').hidden = busy;
+  $('preStop').hidden = !busy;
+  $('preBar').hidden = !busy;
+  $('preFill').style.width = pre.total ? (pre.done / pre.total * 100) + '%' : '0%';
+}
+
+// 残り時間の見込み（これまでの実測から）
+function preEta() {
+  if (!pre.done) return '';
+  const per = (performance.now() - pre.t0) / pre.done;
+  const sec = Math.round(per * (pre.total - pre.done) / 1000);
+  if (sec < 60) return `残り 約 ${sec} 秒`;
+  return `残り 約 ${Math.ceil(sec / 60)} 分`;
+}
+
+async function preCheck(auto) {
+  if (pre.run || !state.connected || !state.hello || state.hello.mode === 'usbdac') { $('preBanner').hidden = true; return; }
+  const miss = await preMissing();
+  if (!miss.length) { $('preBanner').hidden = true; return; }
+  if (auto && preAuto) { preStart(); return; }
+  // 目安は実測から（1 枚あたり約 1.7 秒。停止中で 36〜73KB/s）
+  const sec = Math.round(miss.length * 1.7);
+  const eta = sec < 90 ? `約 ${sec} 秒` : `約 ${Math.ceil(sec / 60)} 分`;
+  preText(`アルバムアートが未取得です（${miss.length} 枚、${eta}）。`
+    + '先に読み込んでおくと、再生中にライブラリを開いても音が途切れません。', false);
+}
+
+async function preStart() {
+  if (pre.run) return;
+  pre.run = true;
+  pre.cancel = false;
+  pre.done = 0;
+  pre.t0 = performance.now();
+  try {
+    const miss = await preMissing();
+    pre.total = miss.length;
+    if (!pre.total) { $('preBanner').hidden = true; return; }
+    // 再生中なら止める（終わったら元に戻す）
+    pre.resume = now.state === 'play';
+    if (pre.resume) { await send('toggle', 6000).catch(() => {}); await new Promise((r) => setTimeout(r, 300)); }
+    for (const a of miss) {
+      if (pre.cancel || !state.connected) break;
+      preText(`アルバムアートを読み込んでいます… ${pre.done} / ${pre.total} 枚　${preEta()}`, true);
+      try {
+        await loadArt(a, true);
+        await loadArt(a, false);
+      } catch (e) { logLine(`[web] アルバムアート #${a}: ${e.message}`); }
+      pre.done++;
+    }
+    preText(pre.cancel ? `中止しました（${pre.done} / ${pre.total} 枚）` : `アルバムアートの読み込みが終わりました（${pre.done} 枚）`, false);
+    setTimeout(() => { if (!pre.run) $('preBanner').hidden = true; }, 4000);
+  } finally {
+    pre.run = false;
+    if (pre.resume && !pre.cancel) { pre.resume = false; send('toggle', 6000).catch(() => {}); }
+    preCheck(false);
+  }
+}
+
+// ---------------------------------------------------------------
+// L/R レベルメーター
+//   本体は「meter 1」を受けている間だけ測り、1 秒に 10 回 lvl を送ってくる。
+//   再生画面を見ているときだけ ON にする（本体の仕事を増やさないため）。
+//   値は 0〜32768（デジタルのピーク）。本体の音量を変えても動かない（音量は DAC 側で効くため）
+// ---------------------------------------------------------------
+const MTR_FLOOR = -60;        // 目盛りの下端 [dB]
+const mtr = { on: false, want: false, l: 0, r: 0, dl: 0, dr: 0, pl: 0, pr: 0, plAt: 0, prAt: 0, raf: 0, at: 0, clip: 0 };
+
+function mtrPct(v) {   // 0〜1 → 目盛り上の位置（%）
+  if (v <= 0) return 0;
+  const db = 20 * Math.log10(v);
+  if (db <= MTR_FLOOR) return 0;
+  return Math.min(100, (db - MTR_FLOOR) / -MTR_FLOOR * 100);
+}
+
+function mtrApply(m) {
+  const v = Math.min(1, (m.l || 0) / 32768), w = Math.min(1, (m.r || 0) / 32768);
+  mtr.l = v;
+  mtr.r = w;
+  const t = performance.now();
+  if (v >= mtr.pl) { mtr.pl = v; mtr.plAt = t; }
+  if (w >= mtr.pr) { mtr.pr = w; mtr.prAt = t; }
+  if (v >= 0.999 || w >= 0.999) mtr.clip = t;   // 0dBFS に到達
+  if (!mtr.raf) mtrLoop();
+}
+
+function mtrLoop() {
+  const t = performance.now();
+  const dt = Math.min(0.1, (t - (mtr.at || t)) / 1000);
+  mtr.at = t;
+  // 上がるときはすぐ、下がるときはゆっくり（毎秒 1.6 ぶん）
+  for (const [k, target] of [['dl', mtr.l], ['dr', mtr.r]]) {
+    mtr[k] = target >= mtr[k] ? target : Math.max(target, mtr[k] - dt * 1.6);
+  }
+  // ピークは 1 秒止めてから落ちる
+  if (t - mtr.plAt > 1000) mtr.pl = Math.max(mtr.dl, mtr.pl - dt * 0.7);
+  if (t - mtr.prAt > 1000) mtr.pr = Math.max(mtr.dr, mtr.pr - dt * 0.7);
+  $('mtrLF').style.clipPath = 'inset(0 ' + (100 - mtrPct(mtr.dl)) + '% 0 0)';
+  $('mtrRF').style.clipPath = 'inset(0 ' + (100 - mtrPct(mtr.dr)) + '% 0 0)';
+  $('mtrLP').style.left = 'calc(' + mtrPct(mtr.pl) + '% - 2px)';
+  $('mtrRP').style.left = 'calc(' + mtrPct(mtr.pr) + '% - 2px)';
+  $('meters').classList.toggle('clip', t - mtr.clip < 1200);
+  const alive = mtr.on && (mtr.dl > 0 || mtr.dr > 0 || mtr.pl > 0 || mtr.pr > 0);
+  mtr.raf = alive ? requestAnimationFrame(mtrLoop) : 0;
+}
+
+// DAC 側の減衰（メーターには映らない分）を出す。
+// 音量・ヘッドルーム・左右バランス・MAX VOL はすべて DAC の音量レジスタで効くので、
+// メーターの値（MCU が DAC へ送るデータ）は変わらない
+function mtrAtten() {
+  const el = $('mtrAtten');
+  const v = state.vol, st = state.settings;
+  if (!v) { el.textContent = ''; return; }
+  const base = v.maxvol ? 0 : v.vol;
+  const hr = st ? (st.headroom || 0) : 0;
+  const bal = st ? (st.balance || 0) : 0;
+  // アルバムごとの音量合わせ。今の曲の値は track 通知（now.info）が持っている
+  const ag = (now.info && typeof now.info.again_db === 'number') ? now.info.again_db
+           : (st && typeof st.again_db === 'number' ? st.again_db : 0);
+  const l = base - hr + ag - (bal > 0 ? bal : 0);
+  const r = base - hr + ag - (bal < 0 ? -bal : 0);
+  const why = [v.maxvol ? '音量 0dB（MAX VOL）' : `音量 ${v.vol}dB`];
+  if (hr) why.push(`ヘッドルーム -${hr}dB`);
+  if (ag) why.push(`アルバム ${ag}dB`);
+  if (bal) why.push(`バランス ${bal < 0 ? 'L' : 'R'}${Math.abs(bal)}`);
+  el.innerHTML = '';
+  const a = document.createElement('div');
+  a.textContent = `DAC 側の減衰: L ${l}dB / R ${r}dB（${why.join('、')}）`;
+  const b = document.createElement('div');
+  b.textContent = 'メーターはこの手前（MCU が DAC へ送るデータ）を測っています。'
+    + 'クロスフィードと低音・高音を除き、DAC 側の設定ではバーは動きません。';
+  el.append(a, b);
+}
+
+// 再生画面を見ていて、つながっているときだけ測ってもらう
+function mtrUpdate() {
+  const want = state.connected && curTab === 'play' && !!state.hello;
+  $('meterCard').hidden = !want;
+  if (want) mtrAtten();
+  if (want === mtr.want) return;
+  mtr.want = want;
+  if (!want) {
+    mtr.on = false;
+    mtr.l = mtr.r = mtr.dl = mtr.dr = mtr.pl = mtr.pr = mtr.clip = 0;
+    $('meters').classList.remove('clip');
+  }
+  send('meter ' + (want ? 1 : 0), 4000).then(() => { mtr.on = want; if (want) mtrLoop(); })
+    .catch(() => { mtr.on = false; });
+}
+
+// ---------------------------------------------------------------
 // タブ・ログ
 // ---------------------------------------------------------------
+const TAB_ORDER = ['play', 'library', 'settings', 'info', 'log'];
+let curTab = 'play';
+
+// ---- 再生パネル ⇄ 画面下のバー -------------------------------------------------
+// 再生タブでは大きなカードのまま（ふつうの並びの中にあるので、パネルと一緒にスクロールする）。
+// 他のタブへ移るときだけ #playerLayer へ持ち出し、位置と大きさを実測して画面下のバーへ動かす。
+const MINI_MS = 360;
+let miniOn = false;
+let miniTimer = 0;
+
+// バーにしたときの位置と大きさ（主部の幅いっぱい・画面の下端）
+function miniRect() {
+  const m = document.querySelector('main').getBoundingClientRect();
+  const h = 60;
+  return { left: m.left, width: m.width, top: window.innerHeight - h, height: h };
+}
+
+// 画面にバーを出せる状態か（つないでいて、SD モードで、曲が選ばれている）
+function miniAvailable() {
+  return state.connected && state.hello && state.hello.mode !== 'usbdac' && now.info.track >= 0;
+}
+
+function placeCard(r) {
+  const c = $('playerCard');
+  c.style.left = r.left + 'px';
+  c.style.top = r.top + 'px';
+  c.style.width = r.width + 'px';
+  c.style.height = r.height + 'px';
+}
+
+function setMini(on) {
+  const card = $('playerCard'), slot = $('playerSlot'), layer = $('playerLayer');
+  if (on === miniOn) return;
+  if (on && (card.hidden || !miniAvailable())) return;
+  clearTimeout(miniTimer);
+  const from = card.getBoundingClientRect();
+  if (on) {
+    slot.style.height = slot.getBoundingClientRect().height + 'px';   // 抜けた跡の高さを保つ
+    layer.appendChild(card);
+  }
+  card.classList.add('floating');
+  placeCard(from);
+  card.getBoundingClientRect();        // ここまでを反映させてから
+  card.classList.toggle('mini', on);
+  document.body.classList.toggle('has-mini', on);
+  placeCard(on ? miniRect() : slotRect());
+  miniOn = on;
+  miniTimer = setTimeout(() => {
+    if (!on) {                          // 大きなカードへ戻す（ふつうの並びに返す）
+      slot.appendChild(card);
+      slot.style.height = '';
+      card.classList.remove('floating');
+      card.style.cssText = '';
+    } else {
+      card.style.height = '';           // 中身に合わせる（高さは CSS 任せ）
+    }
+  }, MINI_MS);
+}
+
+// 戻り先（場所取り）の位置と大きさ。帯がまだ動いている途中でも「止まったあとの位置」を返す
+function slotRect() {
+  const r = $('playerSlot').getBoundingClientRect();
+  const offset = $('track').getBoundingClientRect().left - document.querySelector('main').getBoundingClientRect().left;
+  return { left: r.left - offset, top: r.top, width: r.width, height: r.height };
+}
+
+window.addEventListener('resize', () => { if (miniOn) placeCard(miniRect()); });
+
 function selectTab(name) {
+  const i = TAB_ORDER.indexOf(name);
+  if (i < 0) return;
+  curTab = name;
   for (const x of $('tabs').children) x.classList.toggle('active', x.dataset.tab === name);
-  for (const s of document.querySelectorAll('section.tab')) s.classList.toggle('active', s.id === 'tab-' + name);
+  for (const s of document.querySelectorAll('section.tab')) {
+    const on = s.id === 'tab-' + name;
+    s.classList.toggle('active', on);
+    s.inert = !on;   // 見えていないパネルはクリック・Tab キーの対象から外す
+  }
+  $('track').style.transform = `translateX(${-i * 100}%)`;
+  setMini(name !== 'play');
+  mtrUpdate();
   if (name === 'library') markCurrent();
 }
 $('tabs').addEventListener('click', (e) => {
