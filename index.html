@@ -136,6 +136,16 @@ table.info td:first-child { color: var(--muted); width: 38%; }
 #log { background: var(--log-bg); color: var(--log-text); border-radius: 10px; padding: 10px 12px; flex: 1; min-height: 120px; overflow: auto;
   font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; word-break: break-all; margin: 0; }
 .logbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+#logFind { width: 260px; max-width: 100%; font: inherit; padding: 5px 9px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+#logFind::placeholder { color: var(--muted); }
+#logFind:focus { outline: none; border-color: var(--accent); }
+/* ログの種類（[play] などの見出し）。押すとその種類だけを出す */
+.logtags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.logtags button { font-size: 12px; padding: 2px 9px; border-radius: 99px; color: var(--muted); }
+.logtags button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.logtags .num { opacity: .6; margin-left: 4px; }
+#log mark { background: var(--warn); color: #101828; border-radius: 3px; }
 .empty { text-align: center; padding: 40px 16px; color: var(--muted); }
 .banner { background: var(--chip); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
 .banner.err { color: var(--err); }
@@ -419,12 +429,15 @@ table.info td:first-child { color: var(--muted); width: 38%; }
 
   <section id="tab-log" class="tab">
     <div class="logbar">
+      <input type="search" id="logFind" placeholder="絞り込み（空白区切りで AND、-語 で除外）">
+      <span id="logCount" class="note"></span>
+      <span class="spacer"></span>
       <label><input type="checkbox" id="logFollow" checked> 自動スクロール</label>
       <label><input type="checkbox" id="logProto"> 通信の行も表示</label>
-      <span class="spacer"></span>
       <button id="logCopy">コピー</button>
       <button id="logClear">消去</button>
     </div>
+    <div class="logtags" id="logTags"></div>
     <pre id="log"></pre>
   </section>
   </div>
@@ -1777,10 +1790,74 @@ $('tabs').addEventListener('click', (e) => {
 });
 
 const LOG_MAX = 3000;
-const logLines = [];
-function logLine(text) {
+const logLines = [];        // { text, tag }。tag は [play] などの見出し（無ければ web / 通信）
+const logFilter = { terms: [], tags: new Set() };
+
+// 行から種類を取り出す。本体のログは "[play] ..."、Web アプリは "[web] ..."、
+// 通信の行は "> コマンド" と "@{...}"
+function logTagOf(text) {
+  if (text.startsWith('>') || text.startsWith('@')) return '通信';
+  const m = /^\[([A-Za-z0-9_]{1,12})\]/.exec(text);
+  return m ? m[1].toLowerCase() : 'その他';
+}
+
+// 絞り込みの言葉を解く（空白区切りで AND、先頭の - で除外）
+function parseTerms(q) {
+  return q.trim().toLowerCase().split(/\s+/).filter(Boolean)
+    .map((w) => (w[0] === '-' ? { word: w.slice(1), neg: true } : { word: w, neg: false }))
+    .filter((t) => t.word);
+}
+
+function logMatch(l) {
+  if (logFilter.tags.size && !logFilter.tags.has(l.tag)) return false;
+  for (const t of logFilter.terms) {
+    if (l.text.toLowerCase().includes(t.word) === t.neg) return false;
+  }
+  return true;
+}
+
+const escHtml = (t) => t.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+// 見つけた言葉を目立たせる（表示している行だけ）
+function logHighlight(text, words) {
+  const e = escHtml(text);
+  if (!words.length) return e;
+  const re = new RegExp(words.map((w) => escHtml(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi');
+  return e.replace(re, (m) => '<mark>' + m + '</mark>');
+}
+
+// 種類のボタンを作り直す（並びが変わったときだけ）
+let logTagsSig = '';
+function renderLogTags() {
+  const count = new Map();
+  for (const l of logLines) count.set(l.tag, (count.get(l.tag) || 0) + 1);
+  const tags = [...count.keys()].sort();
+  const sig = tags.map((t) => t + count.get(t)).join(',') + '|' + [...logFilter.tags].join(',');
+  if (sig === logTagsSig) return;
+  logTagsSig = sig;
+  const box = $('logTags');
+  box.textContent = '';
+  for (const t of tags) {
+    const b = document.createElement('button');
+    b.textContent = t;
+    b.className = logFilter.tags.has(t) ? 'on' : '';
+    b.title = 'この種類だけを出す（もう一度押すと解除）';
+    const n = document.createElement('span');
+    n.className = 'num';
+    n.textContent = count.get(t);
+    b.append(n);
+    b.addEventListener('click', () => {
+      if (logFilter.tags.has(t)) logFilter.tags.delete(t);
+      else logFilter.tags.add(t);
+      logTagsSig = '';
+      scheduleLogRender();
+    });
+    box.append(b);
+  }
+}
+function logLine(text, kind) {
   const t = new Date().toLocaleTimeString('ja-JP', { hour12: false });
-  logLines.push(`${t}  ${text}`);
+  logLines.push({ text: `${t}  ${text}`, tag: kind === 'proto' ? '通信' : logTagOf(text) });
   if (logLines.length > LOG_MAX) logLines.splice(0, logLines.length - LOG_MAX);
   scheduleLogRender();
 }
@@ -1791,12 +1868,29 @@ function scheduleLogRender() {
   requestAnimationFrame(() => {
     logPending = false;
     const el = $('log');
-    el.textContent = logLines.join('\n');
+    const shown = logLines.filter(logMatch);
+    const words = logFilter.terms.filter((t) => !t.neg).map((t) => t.word);
+    if (words.length) el.innerHTML = shown.map((l) => logHighlight(l.text, words)).join('\n');
+    else el.textContent = shown.map((l) => l.text).join('\n');
+    const filtered = words.length || logFilter.tags.size;
+    $('logCount').textContent = filtered ? `${shown.length} / ${logLines.length} 行` : `${logLines.length} 行`;
+    renderLogTags();
     if ($('logFollow').checked) el.scrollTop = el.scrollHeight;
   });
 }
-$('logClear').addEventListener('click', () => { logLines.length = 0; scheduleLogRender(); });
-$('logCopy').addEventListener('click', () => navigator.clipboard.writeText(logLines.join('\n')));
+$('logClear').addEventListener('click', () => {
+  logLines.length = 0;
+  logTagsSig = '';
+  scheduleLogRender();
+});
+// 絞り込んでいるときは、出ている行だけをコピーする（そのまま貼って伝えられるように）
+$('logCopy').addEventListener('click', () => {
+  navigator.clipboard.writeText(logLines.filter(logMatch).map((l) => l.text).join('\n'));
+});
+$('logFind').addEventListener('input', (e) => {
+  logFilter.terms = parseTerms(e.target.value);
+  scheduleLogRender();
+});
 
 // ---------------------------------------------------------------
 // 起動・自動接続
