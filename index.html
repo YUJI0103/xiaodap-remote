@@ -259,6 +259,11 @@ table.info td:first-child { color: var(--muted); width: 38%; }
       <div class="row"><label>ギャップレス再生</label>
         <span id="gaplessNote" class="note"></span>
         <div class="seg" data-set="gapless"><button data-v="0">OFF</button><button data-v="1">ON</button></div></div>
+      <div class="row"><label>クロスフィード</label>
+        <div class="seg" data-set="crossfeed"><button data-v="0">OFF</button><button data-v="1">弱</button><button data-v="2">標準</button><button data-v="3">強</button></div></div>
+      <p class="note">ヘッドホン・イヤホン向けに、左右の広がりを整えます（低い音ほど中央に寄ります）。
+        SD モードと USB-DAC モードのどちらでも効きます。桁溢れを避けるため、ON の間は全体の音量が 3〜5dB 下がります
+        （USB-DAC モードでは、ON の間はビットパーフェクトではなくなります）。</p>
     </div>
     <div class="card">
       <h2>音質調整 <span id="soundDac"></span></h2>
@@ -596,8 +601,8 @@ function setSeg(seg, v) {
 function applySettings(s, items) {
   state.settings = s;
   for (const seg of document.querySelectorAll('.seg[data-set]')) setSeg(seg, s[seg.dataset.set]);
-  const gap = document.querySelector('.seg[data-set="gapless"]');
-  for (const b of gap.querySelectorAll('button')) b.disabled = state.hello && state.hello.mode === 'usbdac';
+  const sdOnly = state.hello && state.hello.mode === 'usbdac';
+  for (const b of document.querySelectorAll('.seg[data-set="gapless"] button')) b.disabled = sdOnly;
   if (items) {
     state.soundItems = items;
     const rows = $('soundRows');
