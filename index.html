@@ -1762,8 +1762,13 @@ function selectTab(name) {
   // 何かの拍子に帯の親が横へスクロールしていたら戻す（ずれたまま固定されるのを防ぐ）
   const box = document.querySelector('main');
   if (box.scrollLeft) box.scrollLeft = 0;
-  setMini(name !== 'play');
-  mtrUpdate();
+  // 【順番が大事】再生パネルへ戻すときは、先にレベルメーターのパネルを出して高さを確定させる。
+  // 後から出すと、戻り先（場所取り）をメーターの無い位置で測ってしまい、
+  // 行き過ぎてから戻るような動きになる。逆に去るときは、先にカードを浮かせてからメーターを消す
+  const toPlay = name === 'play';
+  if (toPlay) mtrUpdate();
+  setMini(!toPlay);
+  if (!toPlay) mtrUpdate();
   if (name === 'library') markCurrent();
 }
 $('tabs').addEventListener('click', (e) => {
