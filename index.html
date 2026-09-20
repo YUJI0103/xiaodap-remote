@@ -1495,7 +1495,12 @@ function markCurrent() {
     if (on) target = li;
   }
   if (lib.scrollToCurrent && target && $('tab-library').classList.contains('active')) {
-    target.scrollIntoView({ block: 'center' });
+    // scrollIntoView は「見えるところまで」祖先もスクロールする。帯の親（main）は overflow: hidden だが、
+    // **スクリプトからはスクロールできてしまう**ので、帯ごと横にずれてタブの停止位置が狂う。
+    // そこでパネルの縦スクロールだけを自分で動かす
+    const box = $('tab-library');
+    const r = target.getBoundingClientRect(), b = box.getBoundingClientRect();
+    box.scrollTop += (r.top - b.top) - (b.height - r.height) / 2;
     lib.scrollToCurrent = false;
   }
 }
@@ -1754,6 +1759,9 @@ function selectTab(name) {
     s.inert = !on;   // 見えていないパネルはクリック・Tab キーの対象から外す
   }
   $('track').style.transform = `translateX(${-i * 100}%)`;
+  // 何かの拍子に帯の親が横へスクロールしていたら戻す（ずれたまま固定されるのを防ぐ）
+  const box = document.querySelector('main');
+  if (box.scrollLeft) box.scrollLeft = 0;
   setMini(name !== 'play');
   mtrUpdate();
   if (name === 'library') markCurrent();
