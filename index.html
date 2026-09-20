@@ -425,6 +425,16 @@ table.info td:first-child { color: var(--muted); width: 38%; }
         <input type="checkbox" id="artPlayChk"></div>
       <div class="row"><span class="spacer"></span><button id="artClear" title="ブラウザに保存したアルバムアートを消す（次に表示するときに本体から取り直す）">保存したアルバムアートを消去</button><button id="infoReload">再読み込み</button></div>
     </div>
+    <div class="card">
+      <h2>FW の書き込み</h2>
+      <div class="row"><label>FW 書き込みモード</label>
+        <span class="spacer"></span>
+        <button id="bootBtn" disabled title="本体をブートローダで再起動し、PC から書き込めるようにします">書き込みモードにする</button></div>
+      <p class="note">本体がブートローダで再起動し、PC に <b>USB ドライブ</b>として現れます。
+        そこへ <code>.uf2</code> を放り込むか、PlatformIO の書き込み（<code>pio run -t upload</code>）を実行してください。
+        書き込みが終わると新しい FW で起動します。<b>アプリは消えません</b>ので、書き込まずに電源を入れ直せば元の FW に戻ります。
+        （この間 Web アプリとの接続は切れます。必要な FW: v2.11.0 以降）</p>
+    </div>
   </section>
 
   <section id="tab-log" class="tab">
@@ -572,6 +582,7 @@ async function cleanup(port) {
   $('notConnected').hidden = !!modeSwitch;   // 切替中は切替の案内だけ出す
   $('connectBtn').hidden = !!modeSwitch;
   $('modeBtn').disabled = true;
+  $('bootBtn').disabled = true;
   logLine('[web] 切断しました');
 }
 
@@ -643,6 +654,7 @@ function applyHello(h) {
   if (usb) setMini(false);   // USB-DAC モードでは画面下のバーを出さない
   $('usbCard').hidden = !usb;
   renderNowList();
+  $('bootBtn').disabled = false;   // つながっている間だけ押せる
   const mb = $('modeBtn');
   mb.disabled = false;
   mb.textContent = usb ? 'SD モードへ' : 'USB-DAC モードへ';
@@ -687,6 +699,30 @@ $('modeBtn').addEventListener('click', async () => {
   } catch (e) {
     logLine('[web] mode: ' + e.message);
     $('modeBtn').disabled = false;
+  }
+});
+
+// FW 書き込みモード（ブートローダ）へ入る。本体は再起動して USB ドライブになるので、つなぎ直しは待たない
+$('bootBtn').addEventListener('click', async () => {
+  if (!state.hello) return;
+  if (!confirm('本体を FW 書き込みモード（ブートローダ）で再起動します。\n\n'
+      + 'PC に USB ドライブとして現れるので、.uf2 を放り込むか PlatformIO で書き込んでください。\n'
+      + '書き込まずに電源を入れ直せば、元の FW に戻ります。')) return;
+  $('bootBtn').disabled = true;
+  try {
+    await send('boot', 8000);
+    logLine('[web] FW 書き込みモードへ（本体を再起動中）');
+    const b = $('switchBanner');
+    b.hidden = false;
+    b.textContent = 'FW 書き込みモードで再起動しました。PC に USB ドライブとして現れます'
+      + '（現れないときは本体のリセットを素早く 2 回）。書き込みが終わると新しい FW で起動します。';
+  } catch (e) {
+    logLine('[web] boot: ' + e.message);
+    alert(e.code === 'badcmd' || e.code === 'unknown'
+      ? 'この FW には書き込みモードのコマンドがありません（v2.11.0 以降が必要です）。\n'
+        + '本体のリセットを素早く 2 回ショートすると同じ状態になります。'
+      : '書き込みモードに入れませんでした: ' + e.message);
+    $('bootBtn').disabled = false;
   }
 });
 
