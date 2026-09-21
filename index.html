@@ -67,7 +67,10 @@ main { max-width: 880px; width: 100%; margin: 0 auto; flex: 1; min-height: 0; di
   overflow: hidden; }
 main > .banner { margin: 16px 16px 0; }
 #track { flex: 1; min-height: 0; display: flex; will-change: transform;
-  transition: transform .34s cubic-bezier(.22, .68, .18, 1); }
+  transition: transform .34s cubic-bezier(.22, .68, .18, 1);
+  /* タッチ: 縦スクロールはブラウザ、横はタブの移動に使う（付録 D.16） */
+  touch-action: pan-y; }
+#track.dragging { transition: none; }   /* 指に追従している間 */
 /* 画面が狭いときは、パネルの中で横にもスクロールできるようにする（中身が切れて届かなくならないように） */
 section.tab { flex: 0 0 100%; min-width: 100%; overflow: auto; padding: 16px; scrollbar-gutter: stable; }
 /* ログはパネルいっぱいに広げる */
@@ -89,7 +92,8 @@ section.tab { flex: 0 0 100%; min-width: 100%; overflow: auto; padding: 16px; sc
 #playerCard .art, #playerCard .meta .title, #playerCard .controls button, #playerCard .seek,
 #playerCard .now { transition: width .36s cubic-bezier(.22,.68,.18,1), height .36s cubic-bezier(.22,.68,.18,1),
   font-size .36s cubic-bezier(.22,.68,.18,1), margin .36s cubic-bezier(.22,.68,.18,1), gap .36s ease; }
-#playerCard.mini { display: flex; align-items: center; gap: 14px; padding: 8px 14px; }
+#playerCard.mini { display: flex; align-items: center; gap: 14px; padding: 8px 14px;
+  touch-action: none; }   /* 上へのスワイプを JS が受け取る（付録 D.16） */
 #playerCard.mini .now { flex: 0 1 30%; min-width: 0; gap: 10px; }
 #playerCard.mini .art { width: 44px; height: 44px; border-radius: 8px; font-size: 20px; }
 #playerCard.mini .meta { min-width: 0; }
@@ -426,6 +430,17 @@ table.info td:first-child { color: var(--muted); width: 38%; }
       <div class="row"><span class="spacer"></span><button id="artClear" title="ブラウザに保存したアルバムアートを消す（次に表示するときに本体から取り直す）">保存したアルバムアートを消去</button><button id="infoReload">再読み込み</button></div>
     </div>
     <div class="card">
+      <h2>ライブラリの索引</h2>
+      <div class="row"><label>索引を作り直す</label>
+        <span class="spacer"></span>
+        <button id="rescanBtn" disabled title="SD カードを読み直して曲の索引を作り直します">作り直す</button></div>
+      <p class="note">本体が<b>自動で</b>作り直すのは、<b>カードを替えた</b>とき・<b>ルート直下のフォルダ（アーティスト）が増減した</b>とき・
+        <b>今選んでいるアルバムの中身が変わった</b>とき（停止中のみ）です。
+        <b>それ以外のアルバムに曲を足した</b>ときや<b>アルバムのフォルダを足した</b>ときは気づけないので、ここから作り直してください。
+        再生中の曲はいったん止まり、終わると同じ曲に戻ります。曲数によっては数十秒かかり、その間は本体も Web アプリも反応しません。
+        （必要な FW: v2.15.6 以降）</p>
+    </div>
+    <div class="card">
       <h2>FW の書き込み</h2>
       <div class="row"><label>FW 書き込みモード</label>
         <span class="spacer"></span>
@@ -583,6 +598,7 @@ async function cleanup(port) {
   $('connectBtn').hidden = !!modeSwitch;
   $('modeBtn').disabled = true;
   $('bootBtn').disabled = true;
+  $('rescanBtn').disabled = true;
   logLine('[web] 切断しました');
 }
 
@@ -655,12 +671,20 @@ function applyHello(h) {
   $('usbCard').hidden = !usb;
   renderNowList();
   $('bootBtn').disabled = false;   // つながっている間だけ押せる
+  $('rescanBtn').disabled = usb || !!rescan;   // 索引は SD モードだけ
   const mb = $('modeBtn');
   mb.disabled = false;
   mb.textContent = usb ? 'SD モードへ' : 'USB-DAC モードへ';
   if (modeSwitch && modeSwitch.to === h.mode) {   // 切替後につながった
     logLine(`[web] ${usb ? 'USB-DAC' : 'SD'} モードに切り替わりました（${((Date.now() - modeSwitch.at) / 1000).toFixed(1)} 秒）`);
     endModeSwitch();
+  } else if (booting) {
+    // 書き込みモードの案内は、本体とつながり直した時点で用済み。
+    // 【修正】以前は消す仕組みが無く（モード切替は endModeSwitch() で消していた）、
+    // 書き込みが終わって新しい FW が起動したあとも出したままになっていた
+    booting = false;
+    $('switchBanner').hidden = true;
+    logLine(`[web] 本体が起動しました（FW v${h.fw}）`);
   }
 }
 
@@ -668,12 +692,54 @@ function applyHello(h) {
 // モードの切替（本体が再起動する。付録 D.7）
 // ---------------------------------------------------------------
 let modeSwitch = null;   // { to, at, timer }
+let booting = false;     // FW 書き込みモードへ入れた（つながり直すまで案内を出す）
 
 function endModeSwitch() {
   if (modeSwitch) clearTimeout(modeSwitch.timer);
   modeSwitch = null;
   $('switchBanner').hidden = true;
 }
+
+// ---------------------------------------------------------------
+// ライブラリの索引の作り直し（付録 D.15）
+// 本体は構築中（数十秒）メインループを止めるので、応答はすぐ返り、
+// **終わったことは lib 通知（gen が変わる）で知る**
+// ---------------------------------------------------------------
+let rescan = null;   // { gen, at, timer }
+
+function endRescan(msg) {
+  if (rescan) clearTimeout(rescan.timer);
+  rescan = null;
+  $('switchBanner').hidden = !modeSwitch;
+  $('rescanBtn').disabled = !state.hello || state.hello.mode !== 'sd';
+  if (msg) logLine('[web] ' + msg);
+}
+
+$('rescanBtn').addEventListener('click', async () => {
+  if (!state.hello || rescan) return;
+  if (!confirm('SD カードを読み直して、曲の索引を作り直します。\n\n'
+      + '再生中の曲はいったん止まり、終わると同じ曲に戻ります。\n'
+      + '曲数によっては数十秒かかり、その間は本体も Web アプリも反応しません。')) return;
+  $('rescanBtn').disabled = true;
+  try {
+    const r = await send('rescan', 8000);
+    const b = $('switchBanner');
+    b.hidden = false;
+    b.textContent = '索引を作り直しています… 本体の画面が "Building Library" になります（数十秒）';
+    rescan = { gen: r.gen, at: Date.now(), timer: setTimeout(
+      () => endRescan('索引の作り直し: 待ちきれませんでした（本体の画面を確認してください）'), 300000) };
+    logLine('[web] 索引の作り直しを依頼しました');
+  } catch (e) {
+    logLine('[web] rescan: ' + e.message);
+    alert(e.code === 'badcmd' || e.code === 'unknown'
+      ? 'この FW には索引を作り直すコマンドがありません（v2.15.6 以降が必要です）。\n'
+        + '本体メニューの Rebuild Library か、PC で /XIAODAP/ARTIST.IDX を消してから挿し直してください。'
+      : e.code === 'mode' ? 'USB-DAC モードでは使えません（SD モードに切り替えてください）。'
+      : e.code === 'nosd' ? 'SD カードを読める状態ではありません（本体の画面を確認してください）。'
+      : '索引を作り直せませんでした: ' + e.message);
+    endRescan();
+  }
+});
 
 $('modeBtn').addEventListener('click', async () => {
   if (!state.hello) return;
@@ -712,6 +778,7 @@ $('bootBtn').addEventListener('click', async () => {
   try {
     await send('boot', 8000);
     logLine('[web] FW 書き込みモードへ（本体を再起動中）');
+    booting = true;
     const b = $('switchBanner');
     b.hidden = false;
     b.textContent = 'FW 書き込みモードで再起動しました。PC に USB ドライブとして現れます'
@@ -1132,6 +1199,11 @@ function cacheOf(v) {
 
 function applyLib(m) {
   lib.ready = m.ready;
+  if (rescan && m.gen !== rescan.gen) {   // 頼んだときと違う世代 = 作り直しが終わった
+    endRescan(m.ready
+      ? `索引の作り直しが終わりました（${((Date.now() - rescan.at) / 1000).toFixed(1)} 秒）`
+      : '索引の作り直しに失敗しました（本体の画面を確認してください）');
+  }
   if (!m.ready) {
     showLibMessage('SD カードが無いか、ライブラリを準備しています。');
     renderNowList();
@@ -1824,6 +1896,96 @@ $('tabs').addEventListener('click', (e) => {
   const b = e.target.closest('button');
   if (b) selectTab(b.dataset.tab);
 });
+
+// ---------------------------------------------------------------
+// タッチ操作（スマホ・タッチできる PC。付録 D.16）
+//   ・パネルを左右にスワイプしてタブを移る（指に追従し、離した時点で行き先を決める）
+//   ・再生タブ以外のとき、画面下の再生バーを上へスワイプすると再生タブへ
+// マウスは対象外（文字の選択やドラッグと喧嘩するので pointerType で絞る）。
+// つまみ（音量・シーク）と文字の入力の上では始めない
+// ---------------------------------------------------------------
+const SW = {
+  start: 12,      // これだけ動くまでは向きを決めない
+  ratio: 1.2,     // 横が縦のこの倍率を超えたら「横のスワイプ」
+  commit: 0.22,   // パネルの幅のこの割合を超えたら隣のタブへ
+  flick: 0.45,    // px/ms。速ければ短くても隣のタブへ
+  up: 44,         // 再生バーを上へこれだけで再生タブへ
+};
+let tabSwipe = null, barSwipe = null, swallowClick = false;
+
+const swTouch = (e) => e.pointerType === 'touch' || e.pointerType === 'pen';
+const swOnControl = (e) => !!e.target.closest('input, textarea, select');
+
+// スワイプで終わったときは、指を離した先で click が起きても無視する
+document.addEventListener('click', (e) => {
+  if (!swallowClick) return;
+  swallowClick = false;
+  e.stopPropagation();
+  e.preventDefault();
+}, true);
+document.addEventListener('pointerdown', () => { swallowClick = false; }, true);
+
+// ---- パネルの左右スワイプ ----
+$('track').addEventListener('pointerdown', (e) => {
+  if (!swTouch(e) || swOnControl(e)) return;
+  tabSwipe = { id: e.pointerId, x0: e.clientX, y0: e.clientY, dx: 0,
+               t: performance.now(), w: $('track').clientWidth || 1,
+               i: TAB_ORDER.indexOf(curTab), axis: null };
+});
+
+$('track').addEventListener('pointermove', (e) => {
+  const s = tabSwipe;
+  if (!s || e.pointerId !== s.id) return;
+  s.dx = e.clientX - s.x0;
+  const dy = e.clientY - s.y0;
+  if (!s.axis) {
+    if (Math.abs(s.dx) < SW.start && Math.abs(dy) < SW.start) return;   // まだ向きが分からない
+    if (Math.abs(s.dx) <= Math.abs(dy) * SW.ratio) { tabSwipe = null; return; }   // 縦 = ブラウザに任せる
+    s.axis = 'x';
+    $('track').classList.add('dragging');
+    // 指が帯の外（バーの上など）へ出ても追い続ける。取れなくても致命的ではない
+    try { $('track').setPointerCapture(s.id); } catch (_) {}
+  }
+  // 端では引きを弱めて、これ以上タブが無いことを指に伝える
+  const end = (s.dx > 0 && s.i === 0) || (s.dx < 0 && s.i === TAB_ORDER.length - 1);
+  $('track').style.transform = `translateX(${-s.i * s.w + s.dx * (end ? 0.3 : 1)}px)`;
+});
+
+function endTabSwipe(e) {
+  const s = tabSwipe;
+  if (!s || (e && e.pointerId !== s.id)) return;
+  tabSwipe = null;
+  const tr = $('track');
+  if (s.axis !== 'x') return;
+  tr.classList.remove('dragging');
+  tr.getBoundingClientRect();   // 今の位置を確定させてから動かす（ここからアニメーションが走る）
+  swallowClick = true;
+  const v = Math.abs(s.dx) / Math.max(1, performance.now() - s.t);
+  const go = Math.abs(s.dx) > s.w * SW.commit || v > SW.flick;
+  const to = s.i + (go ? (s.dx < 0 ? 1 : -1) : 0);
+  if (to !== s.i && to >= 0 && to < TAB_ORDER.length) selectTab(TAB_ORDER[to]);
+  else tr.style.transform = `translateX(${-s.i * 100}%)`;   // 元の位置へ戻す
+}
+$('track').addEventListener('pointerup', endTabSwipe);
+$('track').addEventListener('pointercancel', endTabSwipe);
+
+// ---- 画面下の再生バーを上へスワイプ → 再生タブへ ----
+$('playerCard').addEventListener('pointerdown', (e) => {
+  if (!swTouch(e) || !miniOn || swOnControl(e)) return;
+  barSwipe = { id: e.pointerId, x0: e.clientX, y0: e.clientY };
+});
+$('playerCard').addEventListener('pointermove', (e) => {
+  const s = barSwipe;
+  if (!s || e.pointerId !== s.id) return;
+  const dx = e.clientX - s.x0, dy = e.clientY - s.y0;
+  if (dy > -SW.up || Math.abs(dy) <= Math.abs(dx)) return;
+  barSwipe = null;          // 1 回だけ。ここから先はカードが動くので触らない
+  swallowClick = true;
+  selectTab('play');
+});
+const endBarSwipe = (e) => { if (barSwipe && (!e || e.pointerId === barSwipe.id)) barSwipe = null; };
+$('playerCard').addEventListener('pointerup', endBarSwipe);
+$('playerCard').addEventListener('pointercancel', endBarSwipe);
 
 const LOG_MAX = 3000;
 const logLines = [];        // { text, tag }。tag は [play] などの見出し（無ければ web / 通信）
