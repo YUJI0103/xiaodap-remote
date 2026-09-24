@@ -129,6 +129,13 @@ select { font: inherit; padding: 5px 8px; border-radius: 8px; border: 1px solid 
 .seg button { border: none; border-radius: 0; padding: 5px 12px; border-left: 1px solid var(--line); }
 .seg button:first-child { border-left: none; }
 .seg button.on { background: var(--accent); color: var(--accent-text); }
+/* 起動スプラッシュの一覧（FW v3.1.0〜）。本体の画面（128×64 の白黒）と同じ見え方で並べる */
+.splashGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 10px 0 4px; }
+.splashItem { display: flex; flex-direction: column; gap: 6px; padding: 6px; border-radius: 10px; text-align: left; min-width: 0; }
+.splashItem canvas { width: 100%; aspect-ratio: 2 / 1; image-rendering: pixelated; background: #000; border-radius: 4px; display: block; }
+.splashItem .nm { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.splashItem .nm small { color: var(--muted); }
+.splashItem.on { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
 .vol { display: flex; align-items: center; gap: 10px; }
 .vol input[type=range] { flex: 1; accent-color: var(--accent); }
 .vol .db { font-variant-numeric: tabular-nums; min-width: 72px; text-align: right; font-size: 22px; font-weight: 600; }
@@ -384,6 +391,14 @@ table.info td:first-child { color: var(--muted); width: 38%; }
       <div class="row"><label>自動消灯</label>
         <div class="seg" data-set="autooff"><button data-v="0">OFF</button><button data-v="1">15s</button><button data-v="2">30s</button><button data-v="3">1m</button></div></div>
       <p class="note">本体の画面が消灯中に変更しても、画面は点きません（本体のボタンで復帰します）。</p>
+    </div>
+    <div class="card" id="splashCard">
+      <h2>起動スプラッシュ</h2>
+      <p class="note">SD カードの <b>/XIAODAP/SPLASH/</b> に入れた BMP 画像（128×64 まで）から、起動時に出す画像を選びます。
+        本体の画面と同じ白黒で表示しています。押すとすぐ本体に保存されます（本体のメニュー Display Settings → Splash でも選べます）。</p>
+      <p class="note" id="splashMsg"></p>
+      <div class="splashGrid" id="splashGrid"></div>
+      <div class="row"><span class="spacer"></span><button id="splashReload" title="SD カードの画像を入れ替えたとき">一覧を読み直す</button></div>
     </div>
     <div class="card">
       <h2>再生</h2>
@@ -821,6 +836,7 @@ $('bootBtn').addEventListener('click', async () => {
 });
 
 async function refreshAll() {
+  splashInvalidate();   // 本体の再起動・カードの差し替えのあと（画像が変わっているかもしれない）
   const [st, se, inf] = [await send('status'), await send('settings'), await send('info')];
   applyStatus(st);
   applySettings(se, se.items);
@@ -855,7 +871,7 @@ function onEvent(m) {
     case 'state': applyState(m.state); break;
     case 'lvl': mtrApply(m); break;
     case 'pos': setElapsed(m.elapsed); break;
-    case 'lib': applyLib(m); break;
+    case 'lib': applyLib(m); splashInvalidate(); break;   // カードの抜き差しでも来る
     case 'usb': applyUsb(m); break;
     case 'shuffle': applyShuffle(m); break;
   }
@@ -910,6 +926,7 @@ let againNote0 = '';   // 「リプレイゲイン補正」の既定の説明文
 
 function applySettings(s, items) {
   state.settings = s;
+  splashMark();
   mtrAtten();
   for (const seg of document.querySelectorAll('.seg[data-set]')) setSeg(seg, s[seg.dataset.set]);
   const sdOnly = state.hello && state.hello.mode === 'usbdac';
@@ -1045,6 +1062,174 @@ $('artClear').addEventListener('click', async () => {
   logLine('[web] 保存したアルバムアートを消去しました（次に表示するときに本体から取り直します）');
 });
 $('infoReload').addEventListener('click', () => send('info').then(renderInfo).catch((e) => logLine('[web] ' + e.message)));
+
+// ---------------------------------------------------------------
+// 起動スプラッシュ（FW v3.1.0〜。付録 D.15）
+// ---------------------------------------------------------------
+// 一覧（splash）はフォルダの並び順で来るので、本体の選択画面と同じ名前順に並べ替える
+// （UTF-8 のバイト順。ASCII の英字は大文字小文字を区別しない = FW の splash::compare_names）。
+// 画像（splashimg）は本体で白黒にした 128×64（8 行帯 × 128 バイト = 1KB）。元のファイルは送られない。
+// 受け取った画像はアルバムアートと同じ IndexedDB に `s2:<key>:<名前>` で覚える（key = 大きさと更新日時）。
+// 【FW v3.1.2】白黒にする方法を誤差拡散に変えたので、以前の `s:` の画像は使わない（本体の見え方と違う）。
+// 本体で選択画面を出している間は、本体が busy を返すので、少し待って頼み直す
+const splash = { list: null, legacy: false, loading: false, gen: 0, err: null };
+
+function splashBytes(name) {
+  return Array.from(new TextEncoder().encode(name), (c) => (c >= 65 && c <= 90 ? c + 32 : c));
+}
+function cmpSplashNames(a, b) {
+  const x = splashBytes(a), y = splashBytes(b);
+  for (let i = 0; ; i++) {
+    const p = i < x.length ? x[i] : 0, q = i < y.length ? y[i] : 0;
+    if (p !== q || !p) return p - q;
+  }
+}
+
+// 本体の画面の見え方（列ごと 1 バイト、bit0 = 帯の上の行）でキャンバスに描く
+function drawSplashBits(cv, bits) {
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(128, 64);
+  for (let band = 0; band < 8; band++) {
+    for (let x = 0; x < 128; x++) {
+      const v = bits ? bits[band * 128 + x] : 0;
+      for (let b = 0; b < 8; b++) {
+        const o = ((band * 8 + b) * 128 + x) * 4;
+        const on = (v >> b) & 1;
+        img.data[o] = on ? 225 : 0;
+        img.data[o + 1] = on ? 236 : 0;
+        img.data[o + 2] = on ? 255 : 0;
+        img.data[o + 3] = 255;
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function splashInvalidate() {
+  splash.list = null;
+  splash.gen++;
+  splash.loading = false;
+  if (curTab === 'settings') loadSplash(false);
+}
+
+// 今の設定で、どの画像に印を付けるか（"" = 選んでいない → 名前順で先頭、"*" = 出さない）
+function splashMark() {
+  const grid = $('splashGrid');
+  if (!splash.list) return;
+  const sel = (state.settings && state.settings.splash) || '';
+  let on = null, auto = false;
+  if (sel === '*') on = 'none';
+  else {
+    const hit = sel ? splash.list.find((it) => cmpSplashNames(it.name, sel) === 0) : null;
+    if (hit) on = hit.i;
+    else if (splash.list.length) { on = splash.list[0].i; auto = true; }
+  }
+  for (const b of grid.children) {
+    const mine = b.dataset.i === String(on);
+    b.classList.toggle('on', mine);
+    const tag = b.querySelector('small');
+    if (tag) tag.textContent = mine && auto ? '（自動）' : '';
+  }
+  let msg = '';
+  if (!splash.list.length) {
+    msg = 'SD カードの /XIAODAP/SPLASH/ に画像がありません。';
+    if (splash.legacy && sel !== '*') msg += '今は /XIAODAP/SPLASH.BMP を出しています。';
+  } else if (auto && sel) {
+    msg = `選んでいた画像（${sel}）が見つからないので、名前順で先頭の画像を出します。`;
+  }
+  $('splashMsg').textContent = msg;
+}
+
+function renderSplash() {
+  const grid = $('splashGrid');
+  grid.textContent = '';
+  if (!splash.list) {
+    const e = splash.err;
+    $('splashMsg').textContent = !state.connected ? '' :
+      e === 'nosd' ? 'SD カードが無いときは選べません（Bluetooth モード・カードの無い USB-DAC モード）。' :
+      e === 'badcmd' ? 'この機能は FW v3.1.0 以降で使えます。' :
+      e ? '一覧を読めませんでした: ' + e : '読み込み中…';
+    return;
+  }
+  const tile = (i, label) => {
+    const b = document.createElement('button');
+    b.className = 'splashItem';
+    b.dataset.i = i;
+    const cv = document.createElement('canvas');
+    cv.width = 128;
+    cv.height = 64;
+    drawSplashBits(cv, null);
+    const nm = document.createElement('div');
+    nm.className = 'nm';
+    nm.append(label, document.createElement('small'));
+    b.append(cv, nm);
+    grid.append(b);
+    return b;
+  };
+  for (const it of splash.list) {
+    const b = tile(it.i, it.name.replace(/\.bmp$/i, ''));
+    b.title = it.name;
+    b.addEventListener('click', () => { if (state.connected) doSet(`splash ${it.i}`); });
+    it.el = b;
+    if (it.bits) drawSplashBits(b.querySelector('canvas'), it.bits);
+  }
+  const none = tile('none', 'なし（認識情報を出す）');
+  none.addEventListener('click', () => { if (state.connected) doSet('splash none'); });
+  splashMark();
+}
+
+async function loadSplashImage(it, my) {
+  const k = `s2:${it.key}:${it.name}`;
+  let bits = await idbGet(k);
+  for (let tries = 0; !bits; tries++) {
+    try {
+      const r = await send(`splashimg ${it.i}`, 8000);
+      bits = new Uint8Array(1024);
+      r.items.forEach((b, band) => bits.set(b64ToBytes(b).subarray(0, 128), band * 128));
+      idbPut(k, bits);
+    } catch (e) {
+      if (my !== splash.gen || !state.connected) return;
+      if (e.code === 'busy' && tries < 60) {   // 本体で選択画面を開いている（閉じるまで 1 秒ごとに頼み直す）
+        $('splashMsg').textContent = '本体でスプラッシュの選択画面を開いている間は、画像を読み込めません（閉じると続きを読み込みます）。';
+        await new Promise((res) => setTimeout(res, 1000));
+        continue;
+      }
+      if (it.el) it.el.querySelector('.nm').firstChild.textContent += e.code === 'format' ? '（表示できない形式）' : '（読めません）';
+      return;
+    }
+  }
+  if ($('splashMsg').textContent.startsWith('本体でスプラッシュの選択画面')) splashMark();   // 待ちの知らせを消す
+  if (my !== splash.gen) return;
+  it.bits = bits;
+  if (it.el) drawSplashBits(it.el.querySelector('canvas'), bits);
+}
+
+async function loadSplash(force) {
+  if (!state.connected || splash.loading || (splash.list && !force)) return;
+  const my = ++splash.gen;
+  splash.loading = true;
+  splash.list = null;
+  splash.err = null;
+  renderSplash();
+  try {
+    const r = await send('splash', 8000);
+    if (my !== splash.gen) return;
+    splash.list = r.items.slice().sort((a, b) => cmpSplashNames(a.name, b.name));
+    splash.legacy = !!r.legacy;
+  } catch (e) {
+    if (my !== splash.gen) return;
+    splash.err = e.code || e.message;
+  } finally {
+    if (my === splash.gen) splash.loading = false;
+  }
+  renderSplash();
+  for (const it of splash.list || []) {
+    if (my !== splash.gen || !state.connected) return;
+    await loadSplashImage(it, my);
+  }
+}
+
+$('splashReload').addEventListener('click', () => { splash.gen++; splash.loading = false; loadSplash(true); });
 
 // ---------------------------------------------------------------
 // 再生（SD モード）
@@ -1917,6 +2102,7 @@ function selectTab(name) {
   const i = TAB_ORDER.indexOf(name);
   if (i < 0) return;
   curTab = name;
+  if (name === 'settings') loadSplash(false);
   for (const x of $('tabs').children) x.classList.toggle('active', x.dataset.tab === name);
   for (const s of document.querySelectorAll('section.tab')) {
     const on = s.id === 'tab-' + name;
