@@ -1,4 +1,6 @@
-# XIAO DAP Remote
+# GARUDA Console for XIAO DAP
+
+（旧称 XIAO DAP Remote）
 
 XIAO DAP（Seeeduino XIAO SAMD21 を使った DAP 基板）を、PC のブラウザから USB 経由で操作する Web アプリです。
 
