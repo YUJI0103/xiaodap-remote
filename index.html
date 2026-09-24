@@ -339,6 +339,14 @@ table.info td:first-child { color: var(--muted); width: 38%; }
       <div id="usbState" class="title">—</div>
       <p class="note">USB-DAC モードでは PC・スマホの音声を再生します。曲の操作は PC 側で行ってください。</p>
     </div>
+    <div class="card" id="btCard" hidden>
+      <h2>Bluetooth</h2>
+      <div id="btState" class="title">SD カードなし（Bluetooth モード）</div>
+      <p class="note">SD カードが無いので、基板の Bluetooth モジュール（BM83）の音を再生しています（48kHz）。
+        曲の操作はスマホ側で行ってください。本体と Web アプリでは、音量・MAX VOL・ヘッドルーム・左右バランス・
+        音質調整（DAC）・画面の設定ができます（SD カードが無いので保存はされません）。
+        SD カードを挿すと SD モードに戻ります。</p>
+    </div>
   </section>
 
   <section id="tab-library" class="tab">
@@ -379,6 +387,9 @@ table.info td:first-child { color: var(--muted); width: 38%; }
     </div>
     <div class="card">
       <h2>再生</h2>
+      <p class="note warn" id="btSetNote" hidden>Bluetooth モードでは、ギャップレス再生・クロスフィード・低音・高音・
+        リプレイゲイン補正は効きません（Bluetooth の音は XIAO を通らず、直接 DAC へ入るため）。
+        変更した設定は保存されません。</p>
       <div class="row"><label>ギャップレス再生</label>
         <span id="gaplessNote" class="note"></span>
         <div class="seg" data-set="gapless"><button data-v="0">OFF</button><button data-v="1">ON</button></div></div>
@@ -492,7 +503,7 @@ let artWhilePlaying = false;
 try { artWhilePlaying = localStorage.getItem('artWhilePlaying') === '1'; } catch (e) {}
 
 const state = { port: null, reader: null, writer: null, connected: false, hello: null,
-  settings: null, soundItems: [], vol: null, status: null };
+  settings: null, soundItems: [], vol: null, status: null, bt: false };
 
 let nextId = 1;
 const waiting = new Map();   // id → { resolve, reject, items, timer }
@@ -656,6 +667,21 @@ async function startSession() {
   preCheck(true);   // アートが未取得なら知らせる（設定によっては自動で読み込む）
 }
 
+// Bluetooth モード（FW v3.0.0〜）: SD モードでカードが無く、基板の BM83 の音を出している。
+// 再生パネルの代わりに Bluetooth のカードを出し、効かない設定（音声データを加工するもの）を止める
+function applyBt(bt) {
+  bt = !!bt && !!state.hello && state.hello.mode === 'sd';
+  state.bt = bt;
+  const usb = !!state.hello && state.hello.mode === 'usbdac';
+  $('btCard').hidden = !bt;
+  $('playerCard').hidden = usb || bt;
+  if (bt) setMini(false);
+  $('modeChip').textContent = usb ? 'USB-DAC モード' : bt ? 'Bluetooth モード' : 'SD モード';
+  $('btSetNote').hidden = !bt;
+  if (state.settings) applySettings(state.settings);
+  mtrUpdate();
+}
+
 function applyHello(h) {
   state.hello = h;
   setConnChip(`接続: v${h.fw}`, 'ok');
@@ -664,11 +690,12 @@ function applyHello(h) {
   mc.textContent = h.mode === 'usbdac' ? 'USB-DAC モード' : 'SD モード';
   $('notConnected').hidden = true;
   $('connectBtn').hidden = true;
-  $('gaplessNote').textContent = h.mode === 'usbdac' ? 'SD モードのみ' : '';
+  $('gaplessNote').textContent = h.mode === 'usbdac' ? 'SD モードのみ' : '';   // Bluetooth モードは btSetNote で
   const usb = h.mode === 'usbdac';
   $('playerCard').hidden = usb;
   if (usb) setMini(false);   // USB-DAC モードでは画面下のバーを出さない
   $('usbCard').hidden = !usb;
+  applyBt(h.bt);
   renderNowList();
   $('bootBtn').disabled = false;   // つながっている間だけ押せる
   $('rescanBtn').disabled = usb || !!rescan;   // 索引は SD モードだけ
@@ -801,7 +828,7 @@ async function refreshAll() {
   if (state.hello.mode === 'sd') {
     // 索引の状態を先に（再生タブのアート・曲一覧は索引が使えるときだけ取り寄せる。
     // 逆の順だとページを開き直した直後にアートが出なかった）
-    applyLib({ gen: st.gen, ready: st.lib });
+    applyLib({ gen: st.gen, ready: st.lib, bt: st.bt, lid: st.lid });
     if (st.lib) applyNow(await send('now'));
     else applyNow({ track: -1 });
   } else {
@@ -841,6 +868,7 @@ function applyStatus(s) {
   state.status = s;
   applyVol(s);
   if (s.mode === 'sd') {
+    applyBt(s.bt);
     applyState(s.state);
     applyShuffle(s);
     if (s.track >= 0 && s.elapsed != null) setElapsed(s.elapsed);
@@ -885,9 +913,13 @@ function applySettings(s, items) {
   mtrAtten();
   for (const seg of document.querySelectorAll('.seg[data-set]')) setSeg(seg, s[seg.dataset.set]);
   const sdOnly = state.hello && state.hello.mode === 'usbdac';
-  for (const b of document.querySelectorAll('.seg[data-set="gapless"] button')) b.disabled = sdOnly;
+  const bt = state.bt;
+  for (const b of document.querySelectorAll('.seg[data-set="gapless"] button')) b.disabled = sdOnly || bt;
+  // Bluetooth モードでは、XIAO が音声データを加工する設定は効かない（BM83 の音は XIAO を通らない）
+  for (const k of ['crossfeed', 'bass', 'treble'])
+    for (const b of document.querySelectorAll(`.seg[data-set="${k}"] button`)) b.disabled = bt;
   // リプレイゲイン補正は SD モード限定。GAIN.BIN が無い（または索引と合わない）ときは操作できない
-  const noGain = sdOnly || s.again_ready === false;
+  const noGain = sdOnly || bt || s.again_ready === false;
   for (const b of document.querySelectorAll('.seg[data-set="again"] button')) b.disabled = noGain;
   const stale = !sdOnly && s.again_ready === false;
   const note = $('againNote');
@@ -934,7 +966,7 @@ function renderInfo(i) {
   hw.className = 'chip' + (i.dac === 'none' || i.pll === 'none' ? ' warn' : '');
   const rows = [
     ['FW', `v${i.fw}（${i.build}）`],
-    ['モード', i.mode === 'usbdac' ? 'USB-DAC' : 'SD'],
+    ['モード', i.mode === 'usbdac' ? 'USB-DAC' : i.bt ? 'Bluetooth（SD カードなし）' : 'SD'],
     ['DAC', i.dac + (i.dac_addr ? '  ' + i.dac_addr.map(hex).join(' / ') : '')],
     ['PLL', i.pll + (i.pll_addr != null ? '  ' + hex(i.pll_addr) : '')],
     ['OLED', `${i.oled}  ${hex(i.oled_addr)}`],
@@ -959,7 +991,9 @@ function renderInfo(i) {
 // ---------------------------------------------------------------
 async function doSet(args) {
   try { applySettings(await send('set ' + args)); }
-  catch (e) { logLine(`[web] set ${args}: ${e.message}`); }
+  catch (e) {
+    logLine(`[web] set ${args}: ${e.code === 'bt' ? 'Bluetooth モードでは効きません' : e.message}`);
+  }
 }
 
 for (const seg of document.querySelectorAll('.seg[data-set]')) {
@@ -1185,7 +1219,7 @@ function applyUsb(m) {
 // 一覧は 50 件ずつ取り、索引の世代（gen）ごとに覚える。世代が変わったら取り直す
 // ---------------------------------------------------------------
 const PAGE = 50;
-const lib = { gen: null, ready: false, view: { level: 'artists', parent: null }, cache: new Map(), loading: new Set() };
+const lib = { gen: null, lid: null, ready: false, view: { level: 'artists', parent: null }, cache: new Map(), loading: new Set() };
 
 function cacheOf(v) {
   const key = `${v.level}:${v.parent == null ? '' : v.parent}`;
@@ -1198,14 +1232,17 @@ function cacheOf(v) {
 }
 
 function applyLib(m) {
+  if ('bt' in m) applyBt(m.bt);
   lib.ready = m.ready;
+  lib.lid = m.lid || null;   // 索引の指紋（FW v3.0.4〜。古い FW では無い）
   if (rescan && m.gen !== rescan.gen) {   // 頼んだときと違う世代 = 作り直しが終わった
     endRescan(m.ready
       ? `索引の作り直しが終わりました（${((Date.now() - rescan.at) / 1000).toFixed(1)} 秒）`
       : '索引の作り直しに失敗しました（本体の画面を確認してください）');
   }
   if (!m.ready) {
-    showLibMessage('SD カードが無いか、ライブラリを準備しています。');
+    showLibMessage(state.bt ? 'Bluetooth モードです（SD カードがありません）。SD カードを挿すと曲を扱えます。'
+      : 'SD カードが無いか、ライブラリを準備しています。');
     renderNowList();
     return;
   }
@@ -1403,13 +1440,19 @@ async function pumpArt() {
 
 // 鍵（key）の覚え書き。art の応答でしか分からないが、**この art こそが本体の重い処理**
 // （フォルダの走査・WAV のヘッダ走査で 12〜14.5ms）なので、覚えておいて 2 回目以降は送らない。
-// 索引の世代（gen）を含めるので、SD を入れ替えたり曲を増減すると自動で無効になる
-const keyName = (album, thumb) => `k:${lib.gen}:${album}:${thumb ? 1 : 0}`;
+// 【FW v3.0.4 で修正】以前は索引の世代（gen）の下に覚えていたが、gen は**本体の電源を入れるたびに 0 から
+// 数え直す**。アーティストやアルバムを増減して番号がずれたあとも、次の起動で同じ gen になると
+// 以前の索引で覚えた対応をそのまま使い、別のアーティストのアートが並んでいた。
+// 今は索引の指紋（lid。カードとアルバムの並びから作る）の下に覚える。画像そのものは中身の鍵（key）で
+// 保存しているので、並びが変わっても取り直すのは鍵だけ（画像の転送はしない）
+const keyName = (album, thumb, lid = lib.lid) =>
+  lid ? `m:${lid}:${album}:${thumb ? 1 : 0}` : `k:${lib.gen}:${album}:${thumb ? 1 : 0}`;
 
 async function loadArt(album, thumb) {
   const opt = thumb ? ' thumb' : '';
+  const kn = keyName(album, thumb);   // 頼んだ時点の索引で（途中で作り直されても取り違えない）
   // 鍵を覚えていて、画像も残っていれば、本体には何も頼まない
-  const known = await idbGet(keyName(album, thumb));
+  const known = await idbGet(kn);
   if (known) {
     if (known === 'none') return null;            // アートが無いアルバム
     const b = await idbGet(known);
@@ -1419,12 +1462,13 @@ async function loadArt(album, thumb) {
   try { info = await send(`art ${album}${opt}`, 20000); }
   catch (e) {
     if (e.code === 'noart' || e.code === 'toobig') {
-      idbPut(keyName(album, thumb), 'none');
+      idbPut(kn, 'none');
       return null;
     }
     throw e;
   }
-  idbPut(keyName(album, thumb), info.key);
+  // 応答に指紋があれば、それが本体がアルバムを探したときの索引（v3.0.4〜）
+  idbPut(info.lid ? keyName(album, thumb, info.lid) : kn, info.key);
   let blob = await idbGet(info.key);
   if (!blob) {
     const parts = [];
@@ -1784,7 +1828,7 @@ function mtrAtten() {
 
 // 再生画面を見ていて、つながっているときだけ測ってもらう
 function mtrUpdate() {
-  const want = state.connected && curTab === 'play' && !!state.hello;
+  const want = state.connected && curTab === 'play' && !!state.hello && !state.bt;   // BT の音は XIAO を通らない
   $('meterCard').hidden = !want;
   if (want) mtrAtten();
   if (want === mtr.want) return;
