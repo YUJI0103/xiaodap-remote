@@ -52,6 +52,8 @@ header { position: sticky; top: 0; z-index: 2; background: var(--panel); border-
 .bar h1 small { font-size: .5em; font-weight: 600; color: var(--muted); margin-left: -4px; align-self: flex-end; margin-bottom: 3px; }
 .chip { font-size: 12px; padding: 2px 9px; border-radius: 99px; background: var(--chip); color: var(--muted); white-space: nowrap; }
 .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.err { color: var(--err); }
+/* 中継プログラムから開いたページ（公開版とは別物）だと分かるように、枠付きで出す */
+.chip.bridge { color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); font-weight: 600; }
 /* MAX VOL MODE（0dB 固定）は見落とすと危ないので、ON のときだけ塗りつぶして目立たせる */
 .chip.alert { background: var(--err); color: #fff; font-weight: 700; letter-spacing: .02em; }
 .note.warn { color: var(--warn); }
@@ -257,6 +259,7 @@ table.info td:first-child { color: var(--muted); width: 38%; }
 <header>
   <div class="bar">
     <h1><svg class="logo" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"> <rect x="2" y="2" width="60" height="60" rx="14" fill="#2f6fde"/> <g fill="#fff"> <path d="M29 29C22 24 15 18 9 9L9.5 16L6 17L9 24L6 26L12 31L9 34L17 37L15 40L24 40L29 42Z"/> <path d="M35 29C42 24 49 18 55 9L54.5 16L58 17L55 24L58 26L52 31L55 34L47 37L49 40L40 40L35 42Z"/> <path d="M28.5 45L22 57L27 55L29 59L32 56L35 59L37 55L42 57L35.5 45Z"/> <path d="M32 26C36.5 26 38 31 37.5 37C37 43 35 47 32 47C29 47 27 43 26.5 37C26 31 27.5 26 32 26Z"/> <circle cx="32" cy="21" r="5"/> <path d="M28.5 17.5C24.5 17.5 21.5 20 21 24.5C22.5 22.8 25 22.5 28.5 23.5Z"/> </g> <path d="M27.5 17L28 10.5L30.5 13.5L32 8L33.5 13.5L36 10.5L36.5 17Z" fill="#f5c542"/> <circle cx="30.5" cy="20.5" r="1.3" fill="#2f6fde"/> <path d="M29 32L32 36L35 32M29 37L32 41L35 37" fill="none" stroke="#2f6fde" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/> </svg>GARUDA Console <small>for XIAO DAP</small></h1>
+    <span id="bridgeChip" class="chip bridge" hidden title="PC の中継プログラム（GARUDA Console Bridge）から開いています">Bridge モード</span>
     <span id="connChip" class="chip">未接続</span>
     <span id="modeChip" class="chip" hidden></span>
     <span id="hwChip" class="chip" hidden title="認識している DAC / PLL（機器情報タブに詳細）"></span>
@@ -923,7 +926,7 @@ function applyMaxvolChip() {
   if (!state.connected || !v) { c.hidden = true; return; }
   c.hidden = false;
   const on = !!v.maxvol, pending = !!v.maxvol_pending;
-  c.textContent = pending ? 'MAX VOL 切替中…' : on ? 'MAX VOL MODE 0dB' : 'MAX VOL: OFF';
+  c.textContent = pending ? 'MAX VOL 切替中…' : v.volfix ? '0dB（固定）' : on ? 'MAX VOL MODE 0dB' : 'MAX VOL: OFF';
   c.classList.toggle('alert', on);
   c.classList.toggle('warn', !on && pending);
 }
@@ -938,7 +941,10 @@ function applyVol(v) {
   const locked = v.maxvol || v.maxvol_pending;
   for (const id of ['volSlider', 'volUp', 'volDown']) $(id).disabled = locked;
   setSeg($('maxvolSeg'), v.maxvol || v.maxvol_pending ? 1 : 0);
-  $('maxvolNote').textContent = v.maxvol_pending ? '無音になるのを待っています…' : '';
+  // DAC に音量の機能が無い（I2C の無い DAC = I2S_32bit。FW v3.2.0〜）: 常に 0dB。MAX VOL は外せない
+  for (const b of $('maxvolSeg').querySelectorAll('button')) b.disabled = !!v.volfix;
+  $('maxvolNote').textContent = v.volfix ? 'この DAC には音量の機能がありません（常に 0dB。アンプ側で音量を調整してください）'
+    : v.maxvol_pending ? '無音になるのを待っています…' : '';
 }
 
 function setSeg(seg, v) {
@@ -2497,6 +2503,7 @@ function bridgeConnect() {
 }
 
 function bridgeStart() {
+  $('bridgeChip').hidden = false;
   $('connectBtn').hidden = true;
   $('noSerial').hidden = true;
   // QR コードの URL には暗証番号が入っている（#pin=123456）。覚えたら URL からは消す
