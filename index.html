@@ -122,6 +122,7 @@ body.has-mini section.tab { padding-bottom: 86px; }
 }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
 .card h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); font-weight: 600; letter-spacing: .04em; }
+.card h2 .chip { margin-left: 6px; font-weight: 500; letter-spacing: 0; vertical-align: 1px; }
 .row { display: flex; align-items: center; gap: 12px; padding: 7px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
 .row:first-of-type { border-top: none; }
 .row label { flex: 1; min-width: 140px; }
@@ -190,6 +191,10 @@ table.info td:first-child { color: var(--muted); width: 38%; }
 .meters .scale span:last-child { transform: translateX(-100%); }
 .meters.clip .lab { color: var(--err); }
 .prerow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#pinInput { font: inherit; font-size: 20px; letter-spacing: .25em; width: 8.5em; padding: 5px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text); font-variant-numeric: tabular-nums; }
+#pinInput:focus { outline: none; border-color: var(--accent); }
+#pinMsg { color: var(--err); }
 .prebar { height: 6px; border-radius: 3px; background: var(--chip); overflow: hidden; margin-top: 8px; }
 .prebar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s ease; }
 #mtrAtten { margin-top: 10px; line-height: 1.6; }
@@ -281,6 +286,14 @@ table.info td:first-child { color: var(--muted); width: 38%; }
     <div class="prebar" id="preBar" hidden><div id="preFill"></div></div>
   </div>
   <div id="notConnected" class="banner">XIAO DAP を USB でつなぎ、「接続」を押してください。一度許可すると、次からは自動でつながります。</div>
+  <form id="pinBox" class="banner" hidden>
+    <div style="margin-bottom: 8px">PC の中継プログラムの画面に出ている<b>暗証番号（6 桁）</b>を入れてください。</div>
+    <div class="prerow">
+      <input id="pinInput" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]*" placeholder="000000">
+      <button id="pinBtn" class="primary" type="submit">つなぐ</button>
+      <span id="pinMsg"></span>
+    </div>
+  </form>
 
   <div id="track">
   <section id="tab-play" class="tab active">
@@ -382,26 +395,6 @@ table.info td:first-child { color: var(--muted); width: 38%; }
 
   <section id="tab-settings" class="tab">
     <div class="card">
-      <h2>画面</h2>
-      <div class="row"><label>180° 回転（SW1/SW2 も入れ替わる）</label>
-        <div class="seg" data-set="rotate"><button data-v="0">OFF</button><button data-v="1">ON</button></div></div>
-      <div class="row"><label>再生画面のスタイル</label>
-        <div class="seg" data-set="style"><button data-v="0">Standard</button><button data-v="1">Detail</button></div></div>
-      <div class="row"><label>明るさ</label>
-        <div class="seg" data-set="bright"><button data-v="0">1</button><button data-v="1">2</button><button data-v="2">3</button><button data-v="3">4</button><button data-v="4">5</button></div></div>
-      <div class="row"><label>自動消灯</label>
-        <div class="seg" data-set="autooff"><button data-v="0">OFF</button><button data-v="1">15s</button><button data-v="2">30s</button><button data-v="3">1m</button></div></div>
-      <p class="note">本体の画面が消灯中に変更しても、画面は点きません（本体のボタンで復帰します）。</p>
-    </div>
-    <div class="card" id="splashCard">
-      <h2>起動スプラッシュ</h2>
-      <p class="note">SD カードの <b>/XIAODAP/SPLASH/</b> に入れた BMP 画像（128×64 まで）から、起動時に出す画像を選びます。
-        本体の画面と同じ白黒で表示しています。押すとすぐ本体に保存されます（本体のメニュー Display Settings → Splash でも選べます）。</p>
-      <p class="note" id="splashMsg"></p>
-      <div class="splashGrid" id="splashGrid"></div>
-      <div class="row"><span class="spacer"></span><button id="splashReload" title="SD カードの画像を入れ替えたとき">一覧を読み直す</button></div>
-    </div>
-    <div class="card">
       <h2>再生</h2>
       <p class="note warn" id="btSetNote" hidden>Bluetooth モードでは、ギャップレス再生・クロスフィード・低音・高音・
         リプレイゲイン補正は効きません（Bluetooth の音は XIAO を通らず、直接 DAC へ入るため）。
@@ -438,9 +431,29 @@ table.info td:first-child { color: var(--muted); width: 38%; }
         MAX VOL MODE を解除して音量を -30dB まで下げます。</b></p>
     </div>
     <div class="card">
-      <h2>音質調整 <span id="soundDac"></span></h2>
+      <h2>音質調整 <span id="soundDac" class="chip" hidden></span></h2>
       <div id="soundRows"></div>
       <div class="row"><label id="soundPending" class="note"></label><button id="soundReset">既定値に戻す</button></div>
+    </div>
+    <div class="card">
+      <h2>画面</h2>
+      <div class="row"><label>180° 回転（SW1/SW2 も入れ替わる）</label>
+        <div class="seg" data-set="rotate"><button data-v="0">OFF</button><button data-v="1">ON</button></div></div>
+      <div class="row"><label>再生画面のスタイル</label>
+        <div class="seg" data-set="style"><button data-v="0">Standard</button><button data-v="1">Detail</button></div></div>
+      <div class="row"><label>明るさ</label>
+        <div class="seg" data-set="bright"><button data-v="0">1</button><button data-v="1">2</button><button data-v="2">3</button><button data-v="3">4</button><button data-v="4">5</button></div></div>
+      <div class="row"><label>自動消灯</label>
+        <div class="seg" data-set="autooff"><button data-v="0">OFF</button><button data-v="1">15s</button><button data-v="2">30s</button><button data-v="3">1m</button></div></div>
+      <p class="note">本体の画面が消灯中に変更しても、画面は点きません（本体のボタンで復帰します）。</p>
+    </div>
+    <div class="card" id="splashCard">
+      <h2>起動スプラッシュ</h2>
+      <p class="note">SD カードの <b>/XIAODAP/SPLASH/</b> に入れた BMP 画像（128×64 まで）から、起動時に出す画像を選びます。
+        本体の画面と同じ白黒で表示しています。押すとすぐ本体に保存されます（本体のメニュー Display Settings → Splash でも選べます）。</p>
+      <p class="note" id="splashMsg"></p>
+      <div class="splashGrid" id="splashGrid"></div>
+      <div class="row"><span class="spacer"></span><button id="splashReload" title="SD カードの画像を入れ替えたとき">一覧を読み直す</button></div>
     </div>
   </section>
 
@@ -507,6 +520,9 @@ const FILTERS = [
   { usbVendorId: 0x1209, usbProductId: 0x0001 },   // USB-DAC モード（仮の番号）
 ];
 const BAUD = 115200;   // 1200 は書き込みモードに入るので使わない
+// PC の中継プログラム（tools/garuda_bridge.py）から配られたページか。そのときは USB シリアルの代わりに
+// WebSocket で中継とやり取りする（家の中の iPhone などから操作する。付録 D.17）
+const BRIDGE = !!document.querySelector('meta[name="garuda-bridge"]');
 
 const $ = (id) => document.getElementById(id);
 // アートのまとめて読み込み（接続したときに未取得のぶんを先に読む）
@@ -597,6 +613,7 @@ async function readLoop(port) {
 
 // 切断を依頼する（実際の後始末は受信ループの終わりで行う）
 async function closePort() {
+  if (BRIDGE) { bridgeDevClosed(); return; }
   state.keepReading = false;
   if (state.reader) { try { await state.reader.cancel(); } catch (_) {} }
 }
@@ -620,9 +637,10 @@ async function cleanup(port) {
   $('meterCard').hidden = true;
   $('modeChip').hidden = true;
   $('hwChip').hidden = true;
+  $('soundDac').hidden = true;
   $('maxvolChip').hidden = true;
   $('notConnected').hidden = !!modeSwitch;   // 切替中は切替の案内だけ出す
-  $('connectBtn').hidden = !!modeSwitch;
+  $('connectBtn').hidden = !!modeSwitch || BRIDGE;
   $('modeBtn').disabled = true;
   $('bootBtn').disabled = true;
   $('rescanBtn').disabled = true;
@@ -801,6 +819,10 @@ $('modeBtn').addEventListener('click', async () => {
     // つながらないとき: 初めてのモードはブラウザの許可が要る（モードごとに USB の番号が違う）
     modeSwitch.timer = setTimeout(() => {
       if (!modeSwitch) return;
+      if (BRIDGE) {   // 中継プログラムが USB の番号で探し直している。ブラウザの許可は要らない
+        b.textContent = `${name}につながりません。本体の画面と USB ケーブル、PC の中継プログラムの画面を確かめてください。`;
+        return;
+      }
       b.textContent = `${name}につながりません。初めて切り替えたときは「接続」を押して、`
         + `${to === 'usbdac' ? '「XIAO DAP USB-DAC」' : 'XIAO（SD モード）'}のポートを選んでください（モードごとに一度だけ許可が要ります）。`;
       $('connectBtn').hidden = false;
@@ -982,6 +1004,12 @@ function renderInfo(i) {
   hw.hidden = false;
   hw.textContent = `DAC: ${i.dac}  /  PLL: ${i.pll}`;
   hw.className = 'chip' + (i.dac === 'none' || i.pll === 'none' ? ' warn' : '');
+  // 音質調整の項目は DAC ごとに違うので、パネルの見出しにも出す（2 枚使いは ×2）
+  const sd = $('soundDac');
+  const nd = Array.isArray(i.dac_addr) ? i.dac_addr.length : 0;
+  sd.hidden = false;
+  sd.textContent = i.dac === 'none' ? 'DAC なし' : `DAC: ${i.dac}${nd > 1 ? ' ×' + nd : ''}`;
+  sd.className = 'chip' + (i.dac === 'none' ? ' warn' : '');
   const rows = [
     ['FW', `v${i.fw}（${i.build}）`],
     ['モード', i.mode === 'usbdac' ? 'USB-DAC' : i.bt ? 'Bluetooth（SD カードなし）' : 'SD'],
@@ -2314,12 +2342,188 @@ $('logClear').addEventListener('click', () => {
 });
 // 絞り込んでいるときは、出ている行だけをコピーする（そのまま貼って伝えられるように）
 $('logCopy').addEventListener('click', () => {
-  navigator.clipboard.writeText(logLines.filter(logMatch).map((l) => l.text).join('\n'));
+  copyText(logLines.filter(logMatch).map((l) => l.text).join('\n'));
 });
+
+// クリップボードへ。navigator.clipboard は https か localhost のページでしか使えないので、
+// 中継プログラムから配られた http のページ（iPhone など）では、選択してコピーする古い方法に切り替える
+function copyText(t) {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(t).catch((e) => logLine('[web] コピーできません: ' + e.message));
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = t;
+  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, t.length);   // iPhone の Safari は select() だけでは選ばない
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (_) {}
+  ta.remove();
+  if (!ok) logLine('[web] コピーできませんでした（ログを長押しして選んでください）');
+}
 $('logFind').addEventListener('input', (e) => {
   logFilter.terms = parseTerms(e.target.value);
   scheduleLogRender();
 });
+
+// ---------------------------------------------------------------
+// 中継プログラム経由（家の中の iPhone などから。付録 D.17）
+//   本体のポートは中継プログラムが開く。本体が再起動する（モード切替・書き込みモード）と、中継が USB の番号で
+//   探し直して開き直し、dev の知らせをくれる。ここではそれを「ポートが開いた / 閉じた」として扱い、
+//   Web Serial のときと同じ startSession() / cleanup() を通す。コマンドの行はそのまま送る（番号の付け替えは中継がする）
+// ---------------------------------------------------------------
+const bridge = { ws: null, authed: false, dev: null, retry: 0, timer: 0, pin: '' };
+
+function bridgeNote(msg) {
+  const el = $('notConnected');
+  el.textContent = msg;
+  el.hidden = !!state.port || !!modeSwitch;
+}
+
+function bridgeSend(m) {
+  if (!bridge.ws || bridge.ws.readyState !== WebSocket.OPEN) throw new Error('中継とつながっていません');
+  bridge.ws.send(JSON.stringify(m));
+}
+
+function bridgeAuth() {
+  $('pinBox').hidden = true;
+  bridgeSend({ t: 'auth', pin: bridge.pin });
+}
+
+function showPinBox(msg) {
+  $('pinBox').hidden = false;
+  $('pinMsg').textContent = msg || '';
+  $('notConnected').hidden = true;
+  $('pinInput').focus();
+}
+
+// 本体のポートが開いた（中継から dev open）。Web Serial の openPort() と同じ流れ
+async function bridgeDevOpen(m) {
+  if (state.port) return;
+  const port = { bridge: true };
+  bridge.dev = port;
+  state.port = port;
+  state.writer = {
+    write: async (u8) => bridgeSend({ t: 'line', s: new TextDecoder().decode(u8).replace(/\n$/, '') }),
+    releaseLock() {},
+  };
+  port.close = async () => {};
+  state.connected = true;
+  $('notConnected').hidden = true;
+  setConnChip('接続中…', 'warn');
+  logLine(`[web] 中継: 本体を開きました（${m.mode || ''} ${m.port || ''}）`);
+  sessionStarting = true;
+  try {
+    await startSession();
+  } catch (e) {
+    logLine(`[web] 初期化に失敗: ${e.message}`);
+  } finally {
+    sessionStarting = false;
+  }
+}
+
+function bridgeDevClosed() {
+  const p = bridge.dev;
+  if (!p) return;
+  bridge.dev = null;
+  cleanup(p);
+}
+
+function bridgeMsg(m) {
+  switch (m.t) {
+    case 'hello':   // 中継から最初に来る。PC 自身からなら暗証番号は要らない
+      if (!m.need_pin) break;
+      if (bridge.pin) bridgeAuth();
+      else showPinBox('');
+      break;
+    case 'auth':
+      if (m.ok) {
+        bridge.authed = true;
+        $('pinBox').hidden = true;
+        bridgeNote('本体を開いています…');
+        break;
+      }
+      bridge.pin = '';
+      try { localStorage.removeItem('bridgePin'); } catch (_) {}
+      showPinBox(m.wait ? `まちがいが続いたので、${m.wait} 秒待ってから入れ直してください` : '暗証番号が違います');
+      break;
+    case 'kick':   // 中継の画面で暗証番号が変わった
+      bridge.pin = '';
+      try { localStorage.removeItem('bridgePin'); } catch (_) {}
+      logLine('[web] 中継: ' + (m.why || '切断されました'));
+      break;
+    case 'dev':
+      if (m.open) bridgeDevOpen(m);
+      else {
+        bridgeDevClosed();
+        bridgeNote(m.error || '本体を探しています…（PC に USB でつながっていれば、中継プログラムが自動で開きます）');
+      }
+      break;
+    case 'line':
+      if (state.port && state.port === bridge.dev) onLine(m.s);
+      break;
+  }
+}
+
+function bridgeConnect() {
+  clearTimeout(bridge.timer);
+  if (bridge.ws) return;
+  let ws;
+  try { ws = new WebSocket(`ws://${location.host}/ws`); }
+  catch (e) { bridge.timer = setTimeout(bridgeConnect, 3000); return; }
+  bridge.ws = ws;
+  setConnChip('中継につないでいます…', 'warn');
+  ws.onopen = () => { bridge.retry = 0; };
+  ws.onmessage = (e) => {
+    let m;
+    try { m = JSON.parse(e.data); } catch (_) { return; }
+    bridgeMsg(m);
+  };
+  ws.onclose = () => {
+    if (bridge.ws !== ws) return;
+    bridge.ws = null;
+    bridge.authed = false;
+    bridgeDevClosed();
+    setConnChip('未接続');
+    if ($('pinBox').hidden) {
+      bridgeNote('PC の中継プログラムとつながっていません。中継プログラムが動いているか、同じ Wi-Fi につながっているかを確かめてください（自動でつなぎ直します）。');
+    }
+    bridge.retry++;
+    bridge.timer = setTimeout(bridgeConnect, Math.min(10000, 1000 * bridge.retry));
+  };
+}
+
+function bridgeStart() {
+  $('connectBtn').hidden = true;
+  $('noSerial').hidden = true;
+  // QR コードの URL には暗証番号が入っている（#pin=123456）。覚えたら URL からは消す
+  const h = /(?:^#|&)pin=(\d{6})/.exec(location.hash);
+  if (h) {
+    bridge.pin = h[1];
+    try { localStorage.setItem('bridgePin', h[1]); } catch (_) {}
+    history.replaceState(null, '', location.pathname + location.search);
+  } else {
+    try { bridge.pin = localStorage.getItem('bridgePin') || ''; } catch (_) {}
+  }
+  $('pinBox').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const v = $('pinInput').value.replace(/\D/g, '');
+    if (v.length !== 6) { $('pinMsg').textContent = '6 桁の数字を入れてください'; return; }
+    bridge.pin = v;
+    try { localStorage.setItem('bridgePin', v); } catch (_) {}
+    $('pinInput').value = '';
+    try { bridgeAuth(); } catch (_) { bridgeConnect(); }
+  });
+  // iPhone は画面を消す・ほかのアプリへ移ると通信が止まる。戻ってきたらすぐつなぎ直す
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && !bridge.ws) { bridge.retry = 0; bridgeConnect(); }
+  });
+  bridgeNote('PC の中継プログラムにつないでいます…');
+  bridgeConnect();
+}
 
 // ---------------------------------------------------------------
 // 起動・自動接続
@@ -2334,7 +2538,11 @@ async function tryKnownPorts() {
   }
 }
 
-if (!('serial' in navigator)) {
+if (BRIDGE) {
+  bridgeStart();
+  // USB-DAC モードの接続状態などの表示を保つ（通知の無い値）
+  setInterval(() => { if (state.hello) send('status').then(applyStatus).catch(() => {}); }, 5000);
+} else if (!('serial' in navigator)) {
   $('noSerial').hidden = false;
   $('notConnected').hidden = true;
   $('connectBtn').disabled = true;
