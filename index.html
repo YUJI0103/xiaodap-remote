@@ -125,6 +125,22 @@ body.has-mini section.tab { padding-bottom: 86px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
 .card h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); font-weight: 600; letter-spacing: .04em; }
 .card h2 .chip { margin-left: 6px; font-weight: 500; letter-spacing: 0; vertical-align: 1px; }
+/* パネルの並べ替え（再生・設定タブの末尾のボタンと、名前の一覧のダイアログ） */
+.reorderBar { display: flex; justify-content: center; padding: 2px 0 8px; }
+.reorderBar button { font-size: 12.5px; color: var(--muted); padding: 4px 12px; }
+.dlgBack { position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, .35); display: flex;
+  align-items: center; justify-content: center; padding: 16px; }
+.dlg { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px;
+  width: 100%; max-width: 420px; max-height: 90vh; overflow: auto; box-shadow: 0 10px 40px rgba(0, 0, 0, .3); }
+.dlg h2 { font-size: 15px; margin: 0 0 4px; }
+.orderList { list-style: none; margin: 10px 0; padding: 0; }
+.orderList li { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-top: 1px solid var(--line); }
+.orderList li:first-child { border-top: none; }
+.orderList li .name { flex: 1; min-width: 0; }
+.orderList li .hint { font-size: 11.5px; color: var(--muted); }
+.orderList li button { width: 38px; padding: 4px 0; }
+.orderList li.moved { background: var(--chip); border-radius: 6px; }
+.dlgRow { display: flex; gap: 10px; align-items: center; }
 .row { display: flex; align-items: center; gap: 12px; padding: 7px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
 .row:first-of-type { border-top: none; }
 .row label { flex: 1; min-width: 140px; }
@@ -300,7 +316,7 @@ table.info td:first-child { color: var(--muted); width: 38%; }
 
   <div id="track">
   <section id="tab-play" class="tab active">
-    <div class="card">
+    <div class="card" id="volCard">
       <h2>音量</h2>
       <div class="vol">
         <button id="volDown" aria-label="音量を下げる">−</button>
@@ -323,7 +339,7 @@ table.info td:first-child { color: var(--muted); width: 38%; }
       </div>
       <div class="note" id="mtrAtten"></div>
     </div>
-    <div id="playerSlot"><div class="card" id="playerCard">
+    <div id="playerSlot" data-title="再生（曲名・操作ボタン）"><div class="card" id="playerCard">
       <div class="now">
         <div class="art" id="art" aria-hidden="true">♪</div>
         <div class="meta">
@@ -371,6 +387,7 @@ table.info td:first-child { color: var(--muted); width: 38%; }
         音質調整（DAC）・画面の設定ができます（SD カードが無いので保存はされません）。
         SD カードを挿すと SD モードに戻ります。</p>
     </div>
+    <div class="reorderBar"><button data-reorder="play">パネルの並べ替え</button></div>
   </section>
 
   <section id="tab-library" class="tab">
@@ -397,7 +414,7 @@ table.info td:first-child { color: var(--muted); width: 38%; }
   </section>
 
   <section id="tab-settings" class="tab">
-    <div class="card">
+    <div class="card" id="setPlayCard">
       <h2>再生</h2>
       <p class="note warn" id="btSetNote" hidden>Bluetooth モードでは、ギャップレス再生・クロスフィード・低音・高音・
         リプレイゲイン補正は効きません（Bluetooth の音は XIAO を通らず、直接 DAC へ入るため）。
@@ -433,12 +450,12 @@ table.info td:first-child { color: var(--muted); width: 38%; }
         <b>OFF に戻すときは、下げていた分がそのまま戻って急に大きくなるため、本体が自動で一時停止し、
         MAX VOL MODE を解除して音量を -30dB まで下げます。</b></p>
     </div>
-    <div class="card">
+    <div class="card" id="soundCard">
       <h2>音質調整 <span id="soundDac" class="chip" hidden></span></h2>
       <div id="soundRows"></div>
       <div class="row"><label id="soundPending" class="note"></label><button id="soundReset">既定値に戻す</button></div>
     </div>
-    <div class="card">
+    <div class="card" id="dispCard">
       <h2>画面</h2>
       <div class="row"><label>180° 回転（SW1/SW2 も入れ替わる）</label>
         <div class="seg" data-set="rotate"><button data-v="0">OFF</button><button data-v="1">ON</button></div></div>
@@ -458,6 +475,7 @@ table.info td:first-child { color: var(--muted); width: 38%; }
       <div class="splashGrid" id="splashGrid"></div>
       <div class="row"><span class="spacer"></span><button id="splashReload" title="SD カードの画像を入れ替えたとき">一覧を読み直す</button></div>
     </div>
+    <div class="reorderBar"><button data-reorder="settings">パネルの並べ替え</button></div>
   </section>
 
   <section id="tab-info" class="tab">
@@ -511,6 +529,15 @@ table.info td:first-child { color: var(--muted); width: 38%; }
   </div>
   <div id="playerLayer"></div>
 </main>
+<div id="orderDlg" class="dlgBack" hidden>
+  <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="orderTitle">
+    <h2 id="orderTitle">パネルの並べ替え</h2>
+    <p class="note">▲ ▼ で順番を変えると、すぐに反映されます（このブラウザに覚えます）。</p>
+    <ul class="orderList" id="orderList"></ul>
+    <div class="dlgRow"><button id="orderReset">元の並びに戻す</button><span class="spacer"></span>
+      <button id="orderClose" class="primary">閉じる</button></div>
+  </div>
+</div>
 
 <script>
 'use strict';
@@ -2132,6 +2159,123 @@ function slotRect() {
 }
 
 window.addEventListener('resize', () => { if (miniOn) placeCard(miniRect()); });
+
+// ---------------------------------------------------------------
+// パネルの並べ替え（再生・設定タブ。2026-09-26）
+//   タブ（section）の直下の要素を並べ替え、localStorage に覚える。再生パネルは場所取りの枠（playerSlot）ごと動かすので、
+//   画面下のバーから戻るとき（setMini(false) → slotRect()）も並べ替えた位置へ戻る。
+//   隠れているパネル（レベルメーター・USB-DAC・Bluetooth など）も一覧に出して、出たときの位置を決められるようにする
+// ---------------------------------------------------------------
+const ORDER_DEFAULT = {
+  play: ['volCard', 'meterCard', 'playerSlot', 'nowListCard', 'usbCard', 'btCard'],
+  settings: ['setPlayCard', 'soundCard', 'dispCard', 'splashCard'],
+};
+const TAB_NAMES = { play: '再生', settings: '設定' };
+let orderTab = null;
+let orderMoved = null;   // 直前に動かしたパネル（一覧で目印を付ける）
+
+function panelTitle(id) {
+  const el = $(id);
+  if (el.dataset.title) return el.dataset.title;
+  const h = el.querySelector('h2');
+  return h ? h.firstChild.textContent.trim() : id;
+}
+
+function loadOrder(tab) {
+  const def = ORDER_DEFAULT[tab];
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem('order:' + tab) || 'null'); } catch (_) {}
+  if (!Array.isArray(saved)) return def.slice();
+  // 知らない名前は捨て、足りない（新しく増えた）パネルは既定の位置のあとに足す
+  const order = saved.filter((id) => def.includes(id));
+  def.forEach((id, i) => {
+    if (order.includes(id)) return;
+    const prev = def.slice(0, i).reverse().find((p) => order.includes(p));
+    order.splice(prev ? order.indexOf(prev) + 1 : 0, 0, id);
+  });
+  return order;
+}
+
+function applyOrder(tab, order) {
+  const sec = $('tab-' + tab);
+  const bar = sec.querySelector('.reorderBar');
+  for (const id of order) sec.insertBefore($(id), bar);   // 並べ替えボタンはいつも末尾
+}
+
+function saveOrder(tab, order) {
+  try {
+    if (order.join() === ORDER_DEFAULT[tab].join()) localStorage.removeItem('order:' + tab);
+    else localStorage.setItem('order:' + tab, JSON.stringify(order));
+  } catch (_) {}
+}
+
+function renderOrderList() {
+  const order = loadOrder(orderTab);
+  const ul = $('orderList');
+  ul.textContent = '';
+  order.forEach((id, i) => {
+    const li = document.createElement('li');
+    if (id === orderMoved) li.className = 'moved';
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = panelTitle(id);
+    if ($(id).hidden) {
+      const hint = document.createElement('span');
+      hint.className = 'hint';
+      hint.textContent = '（いまは出ていない）';
+      name.append(' ', hint);
+    }
+    const up = document.createElement('button');
+    up.textContent = '▲';
+    up.setAttribute('aria-label', panelTitle(id) + ' を上へ');
+    up.disabled = i === 0;
+    up.addEventListener('click', () => moveOrder(i, -1));
+    const down = document.createElement('button');
+    down.textContent = '▼';
+    down.setAttribute('aria-label', panelTitle(id) + ' を下へ');
+    down.disabled = i === order.length - 1;
+    down.addEventListener('click', () => moveOrder(i, +1));
+    li.append(name, up, down);
+    ul.append(li);
+  });
+}
+
+function moveOrder(i, d) {
+  const order = loadOrder(orderTab);
+  const j = i + d;
+  if (j < 0 || j >= order.length) return;
+  [order[i], order[j]] = [order[j], order[i]];
+  orderMoved = order[j];
+  saveOrder(orderTab, order);
+  applyOrder(orderTab, order);
+  renderOrderList();
+}
+
+function openOrder(tab) {
+  orderTab = tab;
+  orderMoved = null;
+  $('orderTitle').textContent = `パネルの並べ替え（${TAB_NAMES[tab]}タブ）`;
+  renderOrderList();
+  $('orderDlg').hidden = false;
+  $('orderClose').focus();
+}
+
+function closeOrder() {
+  $('orderDlg').hidden = true;
+  orderTab = null;
+}
+
+for (const b of document.querySelectorAll('[data-reorder]')) b.addEventListener('click', () => openOrder(b.dataset.reorder));
+$('orderClose').addEventListener('click', closeOrder);
+$('orderDlg').addEventListener('click', (e) => { if (e.target === $('orderDlg')) closeOrder(); });   // 外側を押したら閉じる
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('orderDlg').hidden) closeOrder(); });
+$('orderReset').addEventListener('click', () => {
+  saveOrder(orderTab, ORDER_DEFAULT[orderTab]);
+  applyOrder(orderTab, ORDER_DEFAULT[orderTab]);
+  orderMoved = null;
+  renderOrderList();
+});
+for (const tab of Object.keys(ORDER_DEFAULT)) applyOrder(tab, loadOrder(tab));
 
 function selectTab(name) {
   const i = TAB_ORDER.indexOf(name);
